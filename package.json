@@ -50,6 +50,7 @@
   },
   "devDependencies": {
     "@digidem/types": "^2.1.0",
+    "@mapeo/crypto": "^1.0.0-alpha.8",
     "@types/node": "^20.7.1",
     "eslint": "^8.50.0",
     "husky": "^8.0.0",
