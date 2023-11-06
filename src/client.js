@@ -7,11 +7,13 @@ import {
   SubChannel,
 } from './lib/sub-channel.js'
 
+/** @typedef {import('rpc-reflector/client.js').ClientApi<import('@mapeo/core').MapeoManager>} MapeoClientApi */
+
 const CLOSE = Symbol('close')
 
 /**
  * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
- * @returns {import('rpc-reflector/client.js').ClientApi<import('@mapeo/core').MapeoManager>}
+ * @returns {MapeoClientApi}
  */
 export function createMapeoClient(messagePort) {
   /** @type {Map<string, Promise<import('rpc-reflector/client.js').ClientApi<import('@mapeo/core/dist/mapeo-project.js').MapeoProject>>>} */
