@@ -8,7 +8,7 @@ import {
 } from './lib/sub-channel.js'
 
 /**
- * @typedef {import('rpc-reflector/client.js').ClientApi<import('@mapeo/core/dist/mapeo-project.js').MapeoProject>} MapeoProjectClientApi
+ * @typedef {import('rpc-reflector/client.js').ClientApi<import('@mapeo/core/dist/mapeo-project.js').MapeoProject>} MapeoProjectApi
  */
 
 /**
@@ -17,7 +17,7 @@ import {
  *     import('@mapeo/core').MapeoManager,
  *     'getProject'
  *   > & {
- *     getProject: (projectPublicId: string) => Promise<MapeoProjectClientApi>
+ *     getProject: (projectPublicId: string) => Promise<MapeoProjectApi>
  *   }
  * >} MapeoClientApi */
 
@@ -74,7 +74,7 @@ export function createMapeoClient(messagePort) {
 
   /**
    * @param {string} projectPublicId
-   * @returns {Promise<MapeoProjectClientApi>}
+   * @returns {Promise<MapeoProjectApi>}
    */
   async function createProjectClient(projectPublicId) {
     const existingClientPromise = projectClientPromises.get(projectPublicId)
