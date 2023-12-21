@@ -4,9 +4,24 @@ import { MessageChannel } from 'node:worker_threads'
 import RAM from 'random-access-memory'
 import { KeyManager } from '@mapeo/crypto'
 import { MapeoManager } from '@mapeo/core'
+import { createRequire } from 'node:module'
+import path from 'node:path'
 
 import { createMapeoClient, closeMapeoClient } from '../src/client.js'
 import { createMapeoServer } from '../src/server.js'
+
+const require = createRequire(import.meta.url)
+const MAPEO_CORE_PKG_FOLDER = path.dirname(
+  require.resolve('@mapeo/core/package.json'),
+)
+const projectMigrationsFolder = path.join(
+  MAPEO_CORE_PKG_FOLDER,
+  'drizzle/project',
+)
+const clientMigrationsFolder = path.join(
+  MAPEO_CORE_PKG_FOLDER,
+  'drizzle/client',
+)
 
 test('IPC wrappers work', async () => {
   const { client, cleanup } = setup()
@@ -147,6 +162,8 @@ function setup() {
     rootKey: KeyManager.generateRootKey(),
     dbFolder: ':memory:',
     coreStorage: () => new RAM(),
+    projectMigrationsFolder,
+    clientMigrationsFolder,
   })
 
   // Since v14.7.0, Node's MessagePort extends EventTarget (https://nodejs.org/api/worker_threads.html#class-messageport)
