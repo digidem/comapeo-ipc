@@ -7,7 +7,19 @@ import {
   SubChannel,
 } from './lib/sub-channel.js'
 
-/** @typedef {import('rpc-reflector/client.js').ClientApi<import('@mapeo/core').MapeoManager>} MapeoClientApi */
+/**
+ * @typedef {import('rpc-reflector/client.js').ClientApi<import('@mapeo/core/dist/mapeo-project.js').MapeoProject>} MapeoProjectClientApi
+ */
+
+/**
+ * @typedef {import('rpc-reflector/client.js').ClientApi<
+ *   Omit<
+ *     import('@mapeo/core').MapeoManager,
+ *     'getProject'
+ *   > & {
+ *     getProject: (projectPublicId: string) => Promise<MapeoProjectClientApi>
+ *   }
+ * >} MapeoClientApi */
 
 const CLOSE = Symbol('close')
 
@@ -57,11 +69,12 @@ export function createMapeoClient(messagePort) {
     },
   })
 
-  return client
+  // TS can't know the type of the proxy, so we cast it in the function return
+  return /** @type {any} */ (client)
 
   /**
    * @param {string} projectPublicId
-   * @returns {Promise<import('rpc-reflector/client.js').ClientApi<import('@mapeo/core/dist/mapeo-project.js').MapeoProject>>}
+   * @returns {Promise<MapeoProjectClientApi>}
    */
   async function createProjectClient(projectPublicId) {
     const existingClientPromise = projectClientPromises.get(projectPublicId)
@@ -93,7 +106,7 @@ export function createMapeoClient(messagePort) {
 }
 
 /**
- * @param {import('rpc-reflector').ClientApi<import('@mapeo/core').MapeoManager>} client client created with `createMapeoClient`
+ * @param {MapeoClientApi} client client created with `createMapeoClient`
  * @returns {Promise<void>}
  */
 export async function closeMapeoClient(client) {
