@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.4](https://github.com/digidem/mapeo-ipc/compare/v0.1.3...v0.1.4) (2023-12-21)
+
+### Bug Fixes
+
+- Fix types for MapeoProject ([#2](https://github.com/digidem/mapeo-ipc/issues/2)) ([2b960e7](https://github.com/digidem/mapeo-ipc/commit/2b960e74b6f1be94a616d2102e81e0fe4d206f6a))
+
 ### [0.1.3](https://github.com/digidem/mapeo-ipc/compare/v0.1.2...v0.1.3) (2023-11-06)
 
 ### [0.1.2](https://github.com/digidem/mapeo-ipc/compare/v0.1.1...v0.1.2) (2023-10-16)
