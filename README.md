@@ -41,7 +41,7 @@ In the server:
 
 ```ts
 import { MapeoManager } from '@mapeo/core'
-import { createMapeoServer } from '@mapeo/core'
+import { createMapeoServer } from '@mapeo/ipc'
 
 // Create Mapeo manager instance
 const manager = new MapeoManager({...})
@@ -59,7 +59,7 @@ server.close()
 In the client:
 
 ```ts
-import { createMapeoClient, closeMapeoClient } from '@mapeo/core'
+import { createMapeoClient, closeMapeoClient } from '@mapeo/ipc'
 
 // Create the client instance
 // `messagePort` can vary based on context (e.g. a port from a MessageChannel, a NodeJS Mobile bridge channel, etc.)
