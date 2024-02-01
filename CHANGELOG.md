@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.5](https://github.com/digidem/mapeo-ipc/compare/v0.1.4...v0.1.5) (2024-02-01)
+
+### Features
+
+- accept timeout option for createMapeoClient() ([#6](https://github.com/digidem/mapeo-ipc/issues/6)) ([5c60bf9](https://github.com/digidem/mapeo-ipc/commit/5c60bf9ac5a4b55d7447d656743335b21fc08008))
+
+### Bug Fixes
+
+- pass opts when creating project rpc client ([8e464c1](https://github.com/digidem/mapeo-ipc/commit/8e464c1bab9b5cebc598530bb36de07964c3a08d))
+
 ### [0.1.4](https://github.com/digidem/mapeo-ipc/compare/v0.1.3...v0.1.4) (2023-12-21)
 
 ### Bug Fixes
