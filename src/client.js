@@ -25,9 +25,12 @@ const CLOSE = Symbol('close')
 
 /**
  * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {object} [opts]
+ * @param {number} [opts.timeout]
+ *
  * @returns {MapeoClientApi}
  */
-export function createMapeoClient(messagePort) {
+export function createMapeoClient(messagePort, opts = {}) {
   /** @type {Map<string, Promise<import('rpc-reflector/client.js').ClientApi<import('@mapeo/core/dist/mapeo-project.js').MapeoProject>>>} */
   const projectClientPromises = new Map()
 
@@ -35,9 +38,9 @@ export function createMapeoClient(messagePort) {
   const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
 
   /** @type {import('rpc-reflector').ClientApi<import('@mapeo/core').MapeoManager>} */
-  const managerClient = createClient(managerChannel)
+  const managerClient = createClient(managerChannel, opts)
   /** @type {import('rpc-reflector').ClientApi<import('./server.js').MapeoRpcApi>} */
-  const mapeoRpcClient = createClient(mapeoRpcChannel)
+  const mapeoRpcClient = createClient(mapeoRpcChannel, opts)
 
   mapeoRpcChannel.start()
   managerChannel.start()
