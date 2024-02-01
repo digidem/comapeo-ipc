@@ -99,7 +99,7 @@ export function createMapeoClient(messagePort, opts = {}) {
     const projectChannel = new SubChannel(messagePort, projectPublicId)
 
     /** @type {import('rpc-reflector').ClientApi<import('@mapeo/core/dist/mapeo-project.js').MapeoProject>} */
-    const projectClient = createClient(projectChannel)
+    const projectClient = createClient(projectChannel, opts)
     projectChannel.start()
 
     deferred.resolve(projectClient)
