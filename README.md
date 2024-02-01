@@ -25,9 +25,9 @@ Creates the IPC server instance. `manager` is a `@mapeo/core` `MapeoManager` ins
 
 Returns an object with a `close()` method, which removes relevant event listeners from the `messagePort`. Does not close or destroy the `messagePort`.
 
-### `createMapeoClient(messagePort: MessagePortLike): ClientApi<MapeoManager>`
+### `createMapeoClient(messagePort: MessagePortLike, opts?: { timeout?: number }): ClientApi<MapeoManager>`
 
-Creates the IPC client instance. `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort).
+Creates the IPC client instance. `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort). `opts.timeout` is an optional timeout used for sending and receiving messages over the channel.
 
 Returns a client instance that reflects the interface of the `manager` provided to [`createMapeoServer`](#createmapeoservermanager-mapeomanager-messageport-messageportlike--close---void). Refer to the [`rpc-reflector` docs](https://github.com/digidem/rpc-reflector#const-clientapi--createclientchannel) for additional information about how to use this.
 
