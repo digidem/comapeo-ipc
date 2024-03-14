@@ -5,6 +5,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "engines": {
+    "node": ">=18.17.1"
+  },
   "scripts": {
     "format": "prettier **/*.{js,md} --write",
     "lint": "eslint . --cache",

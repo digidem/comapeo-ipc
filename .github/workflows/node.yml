@@ -18,8 +18,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
         node-version:
-          - '16.x'
-          - '18.x'
+          - '18.17.1'
           - '20.x'
     steps:
       - uses: actions/checkout@v4
