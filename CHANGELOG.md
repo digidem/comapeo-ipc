@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.7.0](https://github.com/digidem/mapeo-ipc/compare/v0.6.0...v0.7.0) (2024-06-27)
+
+### ⚠ BREAKING CHANGES
+
+- update to @mapeo/core@9.0.0-alpha.12
+
+- update to @mapeo/core@9.0.0-alpha.12 ([bd7ed71](https://github.com/digidem/mapeo-ipc/commit/bd7ed712e8aab1cd7c7de398bcb9295aeeebed93))
+
 ## [0.6.0](https://github.com/digidem/mapeo-ipc/compare/v0.5.0...v0.6.0) (2024-06-24)
 
 ### ⚠ BREAKING CHANGES
