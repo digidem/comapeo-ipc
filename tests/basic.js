@@ -20,6 +20,7 @@ test('IPC wrappers work', async () => {
 
   assert.deepEqual(projectSettings, {
     name: 'mapeo',
+    configMetadata: undefined,
     defaultPresets: undefined,
   })
 
@@ -34,6 +35,7 @@ test('Multiple projects and several calls in same tick', async () => {
     .map((_, index) => {
       return {
         name: `Mapeo ${index}`,
+        configMetadata: undefined,
         defaultPresets: undefined,
       }
     })
