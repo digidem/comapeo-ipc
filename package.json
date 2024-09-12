@@ -1,5 +1,5 @@
 {
-  "name": "@mapeo/ipc",
+  "name": "@comapeo/ipc",
   "version": "0.15.0",
   "description": "IPC wrappers for Mapeo Core",
   "type": "module",
