@@ -22,7 +22,6 @@ test('IPC wrappers work', async () => {
     name: 'mapeo',
     configMetadata: undefined,
     defaultPresets: undefined,
-    isInitialProject: false,
   })
 
   return cleanup()
@@ -38,7 +37,6 @@ test('Multiple projects and several calls in same tick', async () => {
         name: `Mapeo ${index}`,
         configMetadata: undefined,
         defaultPresets: undefined,
-        isInitialProject: false,
       }
     })
 
