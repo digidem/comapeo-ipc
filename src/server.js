@@ -7,7 +7,7 @@ import {
 import { extractMessageEventData } from './lib/utils.js'
 
 /**
- * @param {import('@mapeo/core').MapeoManager} manager
+ * @param {import('@comapeo/core').MapeoManager} manager
  * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
  */
 export function createMapeoServer(manager, messagePort) {
@@ -96,7 +96,7 @@ export class MapeoRpcApi {
   #manager
 
   /**
-   * @param {import('@mapeo/core').MapeoManager} manager
+   * @param {import('@comapeo/core').MapeoManager} manager
    */
   constructor(manager) {
     this.#manager = manager

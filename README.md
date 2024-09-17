@@ -1,6 +1,6 @@
-# @mapeo/ipc
+# @comapeo/ipc
 
-IPC wrappers for [Mapeo Core](https://github.com/digidem/mapeo-core-next). Meant to be used in contexts where there is a communication boundary between the contexts your code runs in e.g. Electron, React Native (with NodeJS Mobile), and NodeJS worker threads. The [channel messaging API](https://developer.mozilla.org/en-US/docs/Web/API/Channel_Messaging_API) is an example where this usage applies.
+IPC wrappers for [CoMapeo Core](https://github.com/digidem/comapeo-core). Meant to be used in contexts where there is a communication boundary between the contexts your code runs in e.g. Electron, React Native (with NodeJS Mobile), and NodeJS worker threads. The [channel messaging API](https://developer.mozilla.org/en-US/docs/Web/API/Channel_Messaging_API) is an example where this usage applies.
 
 ## Table of Contents
 
@@ -11,17 +11,17 @@ IPC wrappers for [Mapeo Core](https://github.com/digidem/mapeo-core-next). Meant
 
 ## Installation
 
-Note that [`@mapeo/core`](https://github.com/digidem/mapeo-core-next) is a peer dependency, so you may have to install it manually depending on your package manager.
+Note that [`@comapeo/core`](https://github.com/digidem/comapeo-core) is a peer dependency, so you may have to install it manually depending on your package manager.
 
 ```sh
-npm install @mapeo/ipc @mapeo/core
+npm install @comapeo/ipc @comapeo/core
 ```
 
 ## API
 
 ### `createMapeoServer(manager: MapeoManager, messagePort: MessagePortLike): { close: () => void }`
 
-Creates the IPC server instance. `manager` is a `@mapeo/core` `MapeoManager` instance and `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort).
+Creates the IPC server instance. `manager` is a `@comapeo/core` `MapeoManager` instance and `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort).
 
 Returns an object with a `close()` method, which removes relevant event listeners from the `messagePort`. Does not close or destroy the `messagePort`.
 
@@ -40,8 +40,8 @@ Closes the IPC client instance. Does not close or destroy the `messagePort` prov
 In the server:
 
 ```ts
-import { MapeoManager } from '@mapeo/core'
-import { createMapeoServer } from '@mapeo/ipc'
+import { MapeoManager } from '@comapeo/core'
+import { createMapeoServer } from '@comapeo/ipc'
 
 // Create Mapeo manager instance
 const manager = new MapeoManager({...})
@@ -59,7 +59,7 @@ server.close()
 In the client:
 
 ```ts
-import { createMapeoClient, closeMapeoClient } from '@mapeo/ipc'
+import { createMapeoClient, closeMapeoClient } from '@comapeo/ipc'
 
 // Create the client instance
 // `messagePort` can vary based on context (e.g. a port from a MessageChannel, a NodeJS Mobile bridge channel, etc.)
