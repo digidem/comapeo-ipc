@@ -6,7 +6,7 @@ import {
   MapeoMapsFastifyPlugin,
   MapeoOfflineFallbackMapFastifyPlugin,
   MapeoStaticMapsFastifyPlugin,
-} from '@mapeo/core'
+} from '@comapeo/core'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import Fastify from 'fastify'
@@ -19,15 +19,15 @@ import { createMapeoServer } from '../src/server.js'
 
 const require = createRequire(import.meta.url)
 
-const MAPEO_CORE_PKG_FOLDER = path.dirname(
-  require.resolve('@mapeo/core/package.json'),
+const COMAPEO_CORE_PKG_FOLDER = path.dirname(
+  require.resolve('@comapeo/core/package.json'),
 )
 const projectMigrationsFolder = path.join(
-  MAPEO_CORE_PKG_FOLDER,
+  COMAPEO_CORE_PKG_FOLDER,
   'drizzle/project',
 )
 const clientMigrationsFolder = path.join(
-  MAPEO_CORE_PKG_FOLDER,
+  COMAPEO_CORE_PKG_FOLDER,
   'drizzle/client',
 )
 
