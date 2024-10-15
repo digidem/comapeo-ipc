@@ -45,14 +45,13 @@
     "rpc-reflector": "^1.3.11"
   },
   "peerDependencies": {
-    "@comapeo/core": "1.0.1"
+    "@comapeo/core": "2.0.0"
   },
   "devDependencies": {
     "@digidem/types": "^2.1.0",
     "@mapeo/crypto": "^1.0.0-alpha.8",
     "@types/nanobench": "^3.0.0",
     "@types/node": "^20.7.1",
-    "@types/tmp": "^0.2.6",
     "eslint": "^8.50.0",
     "fastify": "^4.26.2",
     "husky": "^8.0.0",
@@ -62,7 +61,6 @@
     "prettier": "^3.0.3",
     "random-access-memory": "^6.2.0",
     "standard-version": "^9.5.0",
-    "tmp": "^0.2.3",
     "typescript": "^5.2.2"
   },
   "prettier": {

@@ -1,18 +1,10 @@
 import { MessageChannel } from 'node:worker_threads'
 import RAM from 'random-access-memory'
 import { KeyManager } from '@mapeo/crypto'
-import {
-  MapeoManager,
-  MapeoMapsFastifyPlugin,
-  MapeoOfflineFallbackMapFastifyPlugin,
-  MapeoStaticMapsFastifyPlugin,
-} from '@comapeo/core'
+import { MapeoManager } from '@comapeo/core'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import Fastify from 'fastify'
-import tmp from 'tmp'
-
-tmp.setGracefulCleanup()
 
 import { createMapeoClient, closeMapeoClient } from '../src/client.js'
 import { createMapeoServer } from '../src/server.js'
@@ -40,7 +32,7 @@ export function setup() {
     coreStorage: () => new RAM(),
     projectMigrationsFolder,
     clientMigrationsFolder,
-    fastify: createFastify(),
+    fastify: Fastify(),
   })
 
   // Since v14.7.0, Node's MessagePort extends EventTarget (https://nodejs.org/api/worker_threads.html#class-messageport)
@@ -64,25 +56,4 @@ export function setup() {
       port2.close()
     },
   }
-}
-
-// Just boilerplate needed for creating the MapeoManager instance - actual directories and whatnot don't matter for the tests here
-function createFastify() {
-  const tmpDir = tmp.dirSync()
-
-  const fastify = Fastify()
-  fastify.register(MapeoOfflineFallbackMapFastifyPlugin, {
-    prefix: 'fallback',
-    styleJsonPath: path.join(tmpDir.name, 'foo.json'),
-    sourcesDir: path.join(tmpDir.name, 'bar'),
-  })
-
-  fastify.register(MapeoStaticMapsFastifyPlugin, {
-    prefix: 'static',
-    staticRootDir: path.resolve(tmpDir.name, 'baz'),
-  })
-
-  fastify.register(MapeoMapsFastifyPlugin, { prefix: 'maps' })
-
-  return fastify
 }
