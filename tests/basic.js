@@ -24,6 +24,10 @@ test('IPC wrappers work', async () => {
     defaultPresets: undefined,
   })
 
+  const isArchiveDevice = await client.getIsArchiveDevice()
+
+  assert.ok(isArchiveDevice)
+
   return cleanup()
 })
 
