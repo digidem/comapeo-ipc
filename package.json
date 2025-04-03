@@ -1,6 +1,6 @@
 {
   "name": "@comapeo/ipc",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "description": "IPC wrappers for CoMapeo Core",
   "type": "module",
   "main": "./dist/index.js",
