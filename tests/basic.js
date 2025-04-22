@@ -22,6 +22,8 @@ test('IPC wrappers work', async () => {
     name: 'mapeo',
     configMetadata: undefined,
     defaultPresets: undefined,
+    projectColor: undefined,
+    projectDescription: undefined,
   })
 
   const isArchiveDevice = await client.getIsArchiveDevice()
@@ -41,6 +43,8 @@ test('Multiple projects and several calls in same tick', async () => {
         name: `Mapeo ${index}`,
         configMetadata: undefined,
         defaultPresets: undefined,
+        projectColor: undefined,
+        projectDescription: undefined,
       }
     })
 
