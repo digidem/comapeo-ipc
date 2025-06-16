@@ -17,8 +17,7 @@
     "bench": "node bench/bench.js",
     "build": "tsc -p tsconfig.npm.json",
     "prepack": "npm run build",
-    "prepare": "husky",
-    "release": "standard-version"
+    "prepare": "husky"
   },
   "files": [
     "dist"
@@ -64,7 +63,6 @@
     "npm-run-all2": "^7.0.2",
     "prettier": "^3.5.3",
     "random-access-memory": "^6.2.1",
-    "standard-version": "^9.5.0",
     "typescript": "5.8.3"
   }
 }
