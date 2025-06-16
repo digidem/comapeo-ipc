@@ -9,15 +9,15 @@
     "node": ">=18.17.1"
   },
   "scripts": {
-    "check:format": "prettier --check --cache .",
-    "check:eslint": "eslint . --cache",
-    "check:types": "tsc",
-    "check": "npm-run-all --parallel --continue-on-error --print-label --aggregate-output check:*",
-    "test": "node --test tests/*.js",
     "bench": "node bench/bench.js",
     "build": "tsc -p tsconfig.npm.json",
+    "check:eslint": "eslint . --cache",
+    "check:format": "prettier --check --cache .",
+    "check:types": "tsc",
+    "check": "npm-run-all --parallel --continue-on-error --print-label --aggregate-output check:*",
     "prepack": "npm run build",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test": "node --test tests/*.js"
   },
   "files": [
     "dist"
