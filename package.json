@@ -52,7 +52,7 @@
     "@digidem/types": "^2.1.0",
     "@mapeo/crypto": "^1.0.0-alpha.8",
     "@types/nanobench": "^3.0.0",
-    "@types/node": "^20.7.1",
+    "@types/node": "^20.19.1",
     "eslint": "^8.50.0",
     "fastify": "^4.26.2",
     "husky": "^8.0.0",
