@@ -1,9 +1,24 @@
 {
-  "extends": ["./tsconfig.base.json"],
   "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "declaration": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     "noEmit": true,
-    "declaration": false
+    "noErrorTruncation": true,
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "paths": {
+      "*": ["./node_modules/@digidem/types/vendor/*/index.d.ts"]
+    },
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2022"
   },
   "include": ["src/**/*", "tests/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "dist"]
 }

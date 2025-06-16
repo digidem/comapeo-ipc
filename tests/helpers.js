@@ -35,10 +35,7 @@ export function setup() {
     fastify: Fastify(),
   })
 
-  // Since v14.7.0, Node's MessagePort extends EventTarget (https://nodejs.org/api/worker_threads.html#class-messageport)
-  // @ts-expect-error
   const server = createMapeoServer(manager, port1)
-  // @ts-expect-error
   const client = createMapeoClient(port2)
 
   port1.start()
