@@ -74,7 +74,7 @@ export function createMapeoServer(manager, messagePort) {
     let project
     try {
       project = await manager.getProject(id)
-    } catch (err) {
+    } catch (_err) {
       // TODO: how to respond to client so that method errors?
       projectChannel.close()
       existingProjectChannels.delete(id)
