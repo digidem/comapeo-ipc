@@ -9,6 +9,8 @@
     "node": ">=18.17.1"
   },
   "scripts": {
+    "lint": "eslint . --cache",
+    "format": "prettier . --write",
     "bench": "node bench/bench.js",
     "build": "tsc -p tsconfig.npm.json",
     "check:eslint": "eslint . --cache",

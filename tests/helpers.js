@@ -23,9 +23,7 @@ const clientMigrationsFolder = path.join(
   'drizzle/client',
 )
 
-export function setup() {
-  const { port1, port2 } = new MessageChannel()
-
+export function makeManager() {
   const manager = new MapeoManager({
     rootKey: KeyManager.generateRootKey(),
     dbFolder: ':memory:',
@@ -34,6 +32,14 @@ export function setup() {
     clientMigrationsFolder,
     fastify: Fastify(),
   })
+
+  return manager
+}
+
+export function setup() {
+  const { port1, port2 } = new MessageChannel()
+
+  const manager = makeManager()
 
   const server = createMapeoServer(manager, port1)
   const client = createMapeoClient(port2)

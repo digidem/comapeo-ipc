@@ -1,12 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { MessageChannel } from 'node:worker_threads'
+import { setTimeout } from 'node:timers/promises'
 
-import { closeMapeoClient } from '../src/client.js'
+import { closeMapeoClient, createMapeoClient } from '../src/client.js'
+import { createMapeoServer } from '../src/server.js'
 
-import { setup } from './helpers.js'
+import { setup, makeManager } from './helpers.js'
 
-test('IPC wrappers work', async () => {
+test('IPC wrappers work', async (t) => {
   const { client, cleanup } = setup()
+
+  t.after(cleanup)
 
   const projectId = await client.createProject({ name: 'mapeo' })
 
@@ -33,8 +38,10 @@ test('IPC wrappers work', async () => {
   return cleanup()
 })
 
-test('Multiple projects and several calls in same tick', async () => {
+test('Multiple projects and several calls in same tick', async (t) => {
   const { client, cleanup } = setup()
+
+  t.after(cleanup)
 
   const sample = Array(10)
     .fill(null)
@@ -75,8 +82,10 @@ test('Multiple projects and several calls in same tick', async () => {
   return cleanup()
 })
 
-test('Attempting to get non-existent project fails', async () => {
+test('Attempting to get non-existent project fails', async (t) => {
   const { client, cleanup } = setup()
+
+  t.after(cleanup)
 
   await assert.rejects(async () => {
     await client.getProject('mapeo')
@@ -91,12 +100,12 @@ test('Attempting to get non-existent project fails', async () => {
     results.map(({ status }) => status),
     ['rejected', 'rejected'],
   )
-
-  return cleanup()
 })
 
-test('Concurrent calls that succeed', async () => {
+test('Concurrent calls that succeed', async (t) => {
   const { client, cleanup } = setup()
+
+  t.after(cleanup)
 
   const projectId = await client.createProject()
 
@@ -106,12 +115,12 @@ test('Concurrent calls that succeed', async () => {
   ])
 
   assert.equal(project1, project2)
-
-  return cleanup()
 })
 
-test('Client calls fail after server closes', async () => {
+test('Client calls fail after server closes', async (t) => {
   const { client, server, cleanup } = setup()
+
+  t.after(cleanup)
 
   const projectId = await client.createProject({ name: 'mapeo' })
   const projectBefore = await client.getProject(projectId)
@@ -143,6 +152,41 @@ test('Client calls fail after server closes', async () => {
       result.reason,
     )
   }
+})
 
-  return cleanup()
+test('Server can take time to start', async (t) => {
+  const { port1, port2 } = new MessageChannel()
+
+  const manager = makeManager()
+  /** @type {ReturnType<createMapeoServer> | null} */
+  let server = null
+
+  t.after(cleanup)
+
+  // @ts-expect-error
+  const client = createMapeoClient(port2)
+
+  port1.start()
+  port2.start()
+
+  const projectPromise = client.createProject({ name: 'mapeo' })
+
+  await setTimeout(500)
+  // Since v14.7.0, Node's MessagePort extends EventTarget (https://nodejs.org/api/worker_thr>
+  // @ts-expect-error
+  server = createMapeoServer(manager, port1)
+
+  await Promise.race([
+    projectPromise,
+    setTimeout(1000).then(() => {
+      throw new Error('Timed out waiting for project create')
+    }),
+  ])
+
+  async function cleanup() {
+    if (server !== null) server.close()
+    await closeMapeoClient(client)
+    port1.close()
+    port2.close()
+  }
 })
