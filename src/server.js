@@ -1,4 +1,4 @@
-import { createServer } from 'rpc-reflector'
+import { createServer } from 'rpc-reflector/server'
 import {
   MANAGER_CHANNEL_ID,
   MAPEO_RPC_ID,
@@ -9,8 +9,9 @@ import { extractMessageEventData } from './lib/utils.js'
 /**
  * @param {import('@comapeo/core').MapeoManager} manager
  * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {Parameters<typeof createServer>[2]} [opts]
  */
-export function createMapeoServer(manager, messagePort) {
+export function createMapeoServer(manager, messagePort, opts) {
   /** @type {Map<string, { close: () => void }>} */
   const existingProjectServers = new Map()
 
@@ -22,8 +23,8 @@ export function createMapeoServer(manager, messagePort) {
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
   const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
 
-  const managerServer = createServer(manager, managerChannel)
-  const mapeoRpcServer = createServer(mapeoRpcApi, mapeoRpcChannel)
+  const managerServer = createServer(manager, managerChannel, opts)
+  const mapeoRpcServer = createServer(mapeoRpcApi, mapeoRpcChannel, opts)
 
   managerChannel.start()
   mapeoRpcChannel.start()
@@ -82,7 +83,7 @@ export function createMapeoServer(manager, messagePort) {
       return
     }
 
-    const { close } = createServer(project, projectChannel)
+    const { close } = createServer(project, projectChannel, opts)
 
     existingProjectServers.set(id, { close })
 
