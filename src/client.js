@@ -25,8 +25,7 @@ const CLOSE = Symbol('close')
 
 /**
  * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
- * @param {object} [opts]
- * @param {number} [opts.timeout]
+ * @param {Parameters<typeof createClient>[1]} [opts]
  *
  * @returns {MapeoClientApi}
  */

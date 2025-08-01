@@ -53,7 +53,7 @@
   "dependencies": {
     "eventemitter3": "^5.0.1",
     "p-defer": "^4.0.1",
-    "rpc-reflector": "github:digidem/rpc-reflector#feat/onRequestHook"
+    "rpc-reflector": "^3.0.0-prerelease.0"
   },
   "peerDependencies": {
     "@comapeo/core": "^4.0.0"
