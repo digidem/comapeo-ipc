@@ -1,4 +1,4 @@
-import { createClient } from 'rpc-reflector/client'
+import { createClient } from 'rpc-reflector/client.js'
 import pDefer from 'p-defer'
 
 import {
@@ -8,11 +8,11 @@ import {
 } from './lib/sub-channel.js'
 
 /**
- * @typedef {import('rpc-reflector/client').ClientApi<import('@comapeo/core/dist/mapeo-project.js').MapeoProject>} MapeoProjectApi
+ * @typedef {import('rpc-reflector/client.js').ClientApi<import('@comapeo/core/dist/mapeo-project.js').MapeoProject>} MapeoProjectApi
  */
 
 /**
- * @typedef {import('rpc-reflector/client').ClientApi<
+ * @typedef {import('rpc-reflector/client.js').ClientApi<
  *   Omit<
  *     import('@comapeo/core').MapeoManager,
  *     'getProject'
@@ -30,7 +30,7 @@ const CLOSE = Symbol('close')
  * @returns {MapeoClientApi}
  */
 export function createMapeoClient(messagePort, opts = {}) {
-  /** @type {Map<string, Promise<import('rpc-reflector/client').ClientApi<import('@comapeo/core/dist/mapeo-project.js').MapeoProject>>>} */
+  /** @type {Map<string, Promise<import('rpc-reflector/client.js').ClientApi<import('@comapeo/core/dist/mapeo-project.js').MapeoProject>>>} */
   const projectClientPromises = new Map()
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
@@ -83,7 +83,7 @@ export function createMapeoClient(messagePort, opts = {}) {
 
     if (existingClientPromise) return existingClientPromise
 
-    /** @type {import('p-defer').DeferredPromise<import('rpc-reflector/client').ClientApi<import('@comapeo/core/dist/mapeo-project.js').MapeoProject>>} */
+    /** @type {import('p-defer').DeferredPromise<import('rpc-reflector/client.js').ClientApi<import('@comapeo/core/dist/mapeo-project.js').MapeoProject>>} */
     const deferred = pDefer()
 
     projectClientPromises.set(projectPublicId, deferred.promise)

@@ -1,4 +1,4 @@
-import { createServer } from 'rpc-reflector/server'
+import { createServer } from 'rpc-reflector/server.js'
 import {
   MANAGER_CHANNEL_ID,
   MAPEO_RPC_ID,
