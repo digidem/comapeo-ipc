@@ -10,11 +10,11 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./client": {
+    "./client.js": {
       "import": "./dist/client.js",
       "types": "./dist/client.d.ts"
     },
-    "./server": {
+    "./server.js": {
       "import": "./dist/server.js",
       "types": "./dist/server.d.ts"
     }
