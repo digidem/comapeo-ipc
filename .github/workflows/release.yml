@@ -30,11 +30,7 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Use Node.js 20
-        uses: actions/setup-node@v3
-        with:
-          node-version: 20
-      - uses: nearform-actions/optic-release-automation-action@v4
+      - uses: nearform-actions/optic-release-automation-action@a2785548e8bdafab7e628c2317b604278e460434 # v4.12.2
         with:
           commit-message: 'Release {version}'
           sync-semver-tags: false
