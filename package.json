@@ -76,6 +76,6 @@
     "npm-run-all2": "^7.0.2",
     "prettier": "3.6.2",
     "random-access-memory": "^6.2.1",
-    "typescript": "5.8.3"
+    "typescript": "5.9.2"
   }
 }
