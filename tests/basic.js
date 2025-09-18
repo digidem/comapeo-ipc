@@ -24,6 +24,7 @@ test('IPC wrappers work', async () => {
     defaultPresets: undefined,
     projectColor: undefined,
     projectDescription: undefined,
+    sendStats: false,
   })
 
   const isArchiveDevice = await client.getIsArchiveDevice()
@@ -69,7 +70,7 @@ test('Multiple projects and several calls in same tick', async () => {
 
   settings.forEach((s, index) => {
     const expectedSettings = sample[index]
-    assert.deepEqual(s, expectedSettings)
+    assert.deepEqual(s, { ...expectedSettings, sendStats: false })
   })
 
   return cleanup()
