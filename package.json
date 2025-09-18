@@ -62,7 +62,7 @@
   },
   "devDependencies": {
     "@comapeo/core": "4.3.0",
-    "@digidem/types": "2.1.0",
+    "@digidem/types": "2.3.0",
     "@eslint/js": "9.35.0",
     "@mapeo/crypto": "1.0.0-alpha.8",
     "@types/nanobench": "3.0.0",
