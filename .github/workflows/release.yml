@@ -43,6 +43,7 @@ jobs:
           # npm-tag: ${{ startsWith(github.event.inputs.semver, 'pre') && 'alpha' || 'latest' }}
           # Don't notify linked issues
           notify-linked-issues: false
+          publish-mode: oidc
           build-command: |
             npm ci
             npm run build
