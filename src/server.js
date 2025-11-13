@@ -83,6 +83,10 @@ export function createMapeoServer(manager, messagePort, opts) {
       return
     }
 
+    project.once('close', () => {
+      existingProjectChannels.delete(id)
+    })
+
     const { close } = createServer(project, projectChannel, opts)
 
     existingProjectServers.set(id, { close })
