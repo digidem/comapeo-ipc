@@ -34,6 +34,75 @@ test('IPC wrappers work', async () => {
   return cleanup()
 })
 
+test('IPC wrappers work', async () => {
+  const { client, cleanup } = setup()
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  assert.ok(projectId)
+
+  const project = await client.getProject(projectId)
+
+  assert.ok(project)
+
+  const projectSettings = await project.$getProjectSettings()
+
+  assert.deepEqual(projectSettings, {
+    name: 'mapeo',
+    configMetadata: undefined,
+    defaultPresets: undefined,
+    projectColor: undefined,
+    projectDescription: undefined,
+    sendStats: false,
+  })
+
+  const isArchiveDevice = await client.getIsArchiveDevice()
+
+  assert.ok(isArchiveDevice)
+
+  return cleanup()
+})
+
+test('Get project calls deduplicated', async (t) => {
+  const { client, cleanup } = setup()
+  t.after(cleanup)
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  assert.ok(projectId)
+
+  const project = await client.getProject(projectId)
+
+  assert.ok(project)
+
+  const project2 = await client.getProject(projectId)
+
+  assert.ok(project2)
+
+  assert.equal(project2, project)
+})
+
+test('Get project gives new ref after close', async (t) => {
+  const { client, cleanup } = setup()
+  t.after(cleanup)
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  assert.ok(projectId)
+
+  const project = await client.getProject(projectId)
+
+  assert.ok(project)
+
+  await project.close()
+
+  const project2 = await client.getProject(projectId)
+
+  assert.ok(project2)
+
+  assert.notEqual(project2, project)
+})
+
 test('Multiple projects and several calls in same tick', async () => {
   const { client, cleanup } = setup()
 
