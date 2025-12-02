@@ -5,8 +5,8 @@ import { closeMapeoClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
 
-test('IPC wrappers work', async () => {
-  const { client, cleanup } = setup()
+test('IPC wrappers work', async (t) => {
+  const { client } = setup(t)
 
   const projectId = await client.createProject({ name: 'mapeo' })
 
@@ -30,12 +30,10 @@ test('IPC wrappers work', async () => {
   const isArchiveDevice = await client.getIsArchiveDevice()
 
   assert.ok(isArchiveDevice)
-
-  return cleanup()
 })
 
-test('IPC wrappers work', async () => {
-  const { client, cleanup } = setup()
+test('IPC wrappers work', async (t) => {
+  const { client } = setup(t)
 
   const projectId = await client.createProject({ name: 'mapeo' })
 
@@ -59,13 +57,10 @@ test('IPC wrappers work', async () => {
   const isArchiveDevice = await client.getIsArchiveDevice()
 
   assert.ok(isArchiveDevice)
-
-  return cleanup()
 })
 
 test('Get project calls deduplicated', async (t) => {
-  const { client, cleanup } = setup()
-  t.after(cleanup)
+  const { client } = setup(t)
 
   const projectId = await client.createProject({ name: 'mapeo' })
 
@@ -82,29 +77,34 @@ test('Get project calls deduplicated', async (t) => {
   assert.equal(project2, project)
 })
 
-test('Get project gives new ref after close', async (t) => {
-  const { client, cleanup } = setup()
-  t.after(cleanup)
-
+test('Project methods work after project is closed', async (t) => {
+  const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
 
   assert.ok(projectId)
 
   const project = await client.getProject(projectId)
-
-  assert.ok(project)
+  const obs = await project.observation.create({
+    schemaName: 'observation',
+    attachments: [],
+    tags: {},
+  })
 
   await project.close()
 
-  const project2 = await client.getProject(projectId)
+  // Even after project is closed on server, client can still get the project IPC instance
+  const projectAfterClose = await client.getProject(projectId)
+  assert.ok(projectAfterClose)
 
-  assert.ok(project2)
-
-  assert.notEqual(project2, project)
+  // Ensure that the project methods still work
+  const obsAfterClose = await projectAfterClose.observation.getByDocId(
+    obs.docId,
+  )
+  assert.deepEqual(obsAfterClose, obs)
 })
 
-test('Multiple projects and several calls in same tick', async () => {
-  const { client, cleanup } = setup()
+test('Multiple projects and several calls in same tick', async (t) => {
+  const { client } = setup(t)
 
   const sample = Array(10)
     .fill(null)
@@ -141,12 +141,10 @@ test('Multiple projects and several calls in same tick', async () => {
     const expectedSettings = sample[index]
     assert.deepEqual(s, { ...expectedSettings, sendStats: false })
   })
-
-  return cleanup()
 })
 
-test('Attempting to get non-existent project fails', async () => {
-  const { client, cleanup } = setup()
+test('Attempting to get non-existent project fails', async (t) => {
+  const { client } = setup(t)
 
   await assert.rejects(async () => {
     await client.getProject('mapeo')
@@ -161,12 +159,10 @@ test('Attempting to get non-existent project fails', async () => {
     results.map(({ status }) => status),
     ['rejected', 'rejected'],
   )
-
-  return cleanup()
 })
 
-test('Concurrent calls that succeed', async () => {
-  const { client, cleanup } = setup()
+test('Concurrent calls that succeed', async (t) => {
+  const { client } = setup(t)
 
   const projectId = await client.createProject()
 
@@ -176,12 +172,10 @@ test('Concurrent calls that succeed', async () => {
   ])
 
   assert.equal(project1, project2)
-
-  return cleanup()
 })
 
-test('Client calls fail after server closes', async () => {
-  const { client, server, cleanup } = setup()
+test('Client calls fail after server closes', async (t) => {
+  const { client, server } = setup(t)
 
   const projectId = await client.createProject({ name: 'mapeo' })
   const projectBefore = await client.getProject(projectId)
@@ -213,6 +207,4 @@ test('Client calls fail after server closes', async () => {
       result.reason,
     )
   }
-
-  return cleanup()
 })
