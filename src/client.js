@@ -101,10 +101,6 @@ export function createMapeoClient(messagePort, opts = {}) {
     const projectClient = createClient(projectChannel, opts)
     projectChannel.start()
 
-    projectClient.on('close', () => {
-      projectClientPromises.delete(projectPublicId)
-    })
-
     deferred.resolve(projectClient)
 
     return projectClient
