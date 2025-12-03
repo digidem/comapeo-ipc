@@ -84,7 +84,11 @@ export function createMapeoServer(manager, messagePort, opts) {
     }
 
     project.once('close', () => {
+      projectChannel.close()
       existingProjectChannels.delete(id)
+      // Close the RPC server when the project is closed
+      close()
+      existingProjectServers.delete(id)
     })
 
     const { close } = createServer(project, projectChannel, opts)

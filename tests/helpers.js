@@ -5,6 +5,8 @@ import { MapeoManager } from '@comapeo/core'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import Fastify from 'fastify'
+import os from 'node:os'
+import fs from 'node:fs'
 
 import { createMapeoClient, closeMapeoClient } from '../src/client.js'
 import { createMapeoServer } from '../src/server.js'
@@ -23,13 +25,16 @@ const clientMigrationsFolder = path.join(
   'drizzle/client',
 )
 
-export function setup() {
+/** @param {import('node:test').TestContext} t */
+export function setup(t) {
   const { port1, port2 } = new MessageChannel()
+  const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mapeo-ipc-test-'))
+  const coreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mapeo-ipc-core-'))
 
   const manager = new MapeoManager({
     rootKey: KeyManager.generateRootKey(),
-    dbFolder: ':memory:',
-    coreStorage: () => new RAM(),
+    dbFolder: dbDir,
+    coreStorage: coreDir,
     projectMigrationsFolder,
     clientMigrationsFolder,
     fastify: Fastify(),
@@ -41,16 +46,20 @@ export function setup() {
   port1.start()
   port2.start()
 
+  t.after(async () => {
+    server.close()
+    await closeMapeoClient(client)
+    fs.rmSync(dbDir, { recursive: true, force: true })
+    fs.rmSync(coreDir, { recursive: true, force: true })
+    port1.close()
+    port2.close()
+  })
+
   return {
     port1,
     port2,
     server,
     client,
-    cleanup: async () => {
-      server.close()
-      await closeMapeoClient(client)
-      port1.close()
-      port2.close()
-    },
+    serverManager: manager,
   }
 }
