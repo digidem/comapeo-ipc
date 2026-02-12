@@ -2,6 +2,7 @@ import { createClient } from 'rpc-reflector/client.js'
 import pDefer from 'p-defer'
 
 import {
+  APP_RPC_ID,
   MANAGER_CHANNEL_ID,
   MAPEO_RPC_ID,
   SubChannel,
@@ -114,4 +115,35 @@ export function createMapeoClient(messagePort, opts = {}) {
 export async function closeMapeoClient(client) {
   // @ts-expect-error
   return client[CLOSE]()
+}
+
+/**
+ * @typedef {import('rpc-reflector/client.js').ClientApi<import('./server.js').RpcApi>} AppRpcApi
+ */
+
+/**
+ * Create an rpc client for application RPC messages that are not part of core,
+ * e.g. the different servers for maps, and in the future for serving blobs and
+ * icons (once extracted from core)
+ *
+ * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {Parameters<typeof createClient>[1]} [opts]
+ * @return {AppRpcApi}
+ */
+export function createAppRpcClient(messagePort, opts = {}) {
+  const appRpcChannel = new SubChannel(messagePort, APP_RPC_ID)
+  const appRpcClient = /** @type {AppRpcApi} */ (
+    createClient(appRpcChannel, opts)
+  )
+  appRpcChannel.start()
+  return appRpcClient
+}
+
+/**
+ * Close the app RPC client (removes listeners but does not close the message port)
+ *
+ * @param {AppRpcApi} appRpcClient client created with `createAppRpcClient`
+ */
+export function closeAppRpcClient(appRpcClient) {
+  createClient.close(appRpcClient)
 }
