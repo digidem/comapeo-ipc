@@ -53,7 +53,6 @@
   },
   "homepage": "https://github.com/digidem/comapeo-ipc#readme",
   "dependencies": {
-    "@comapeo/map-server": "^1.0.0-pre.6",
     "eventemitter3": "^5.0.1",
     "p-defer": "^4.0.1",
     "rpc-reflector": "^3.0.1"
@@ -63,6 +62,7 @@
   },
   "devDependencies": {
     "@comapeo/core": "5.2.1",
+    "@comapeo/map-server": "^1.0.0-pre.7",
     "@digidem/types": "2.3.0",
     "@eslint/js": "9.39.2",
     "@mapeo/crypto": "1.0.0-alpha.10",
