@@ -125,7 +125,7 @@ export class MapeoRpcApi {
 /**
  * @typedef {object} RpcApi
  * @property {object} mapServer
- * @property {(options?: import('@comapeo/map-server').ListenOptions) => Promise<{ localPort: number }>} mapServer.listen
+ * @property {(options?: { localPort?: number, remotePort?: number }) => Promise<{ localPort: number, remotePort: number }>} mapServer.listen
  * @property {() => Promise<void>} mapServer.close
  */
 
