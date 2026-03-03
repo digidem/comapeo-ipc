@@ -35,7 +35,7 @@ function createMockRpcApi() {
     mapServer: {
       async listen(options) {
         const localPort = options?.localPort || 3000
-        return { localPort }
+        return { localPort, remotePort: 3001 }
       },
       async close() {},
     },
@@ -67,7 +67,7 @@ test('AppRpc concurrent calls resolve correctly', async (t) => {
     mapServer: {
       async listen(options) {
         callCount++
-        return { localPort: options?.localPort || 3000 }
+        return { localPort: options?.localPort || 3000, remotePort: 3001 }
       },
       async close() {},
     },
@@ -135,7 +135,7 @@ test('AppRpc works with nested object API', async (t) => {
   const api = {
     mapServer: {
       async listen(options) {
-        return { localPort: options?.localPort || 3000 }
+        return { localPort: options?.localPort || 3000, remotePort: 3001 }
       },
       async close() {},
     },
@@ -179,7 +179,7 @@ test('AppRpc multiple independent clients on separate channels', async (t) => {
     mapServer: {
       async listen(options) {
         callCount++
-        return { localPort: options?.localPort || 3000 }
+        return { localPort: options?.localPort || 3000, remotePort: 3001 }
       },
       async close() {},
     },
