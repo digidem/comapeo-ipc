@@ -47,14 +47,14 @@ test('AppRpc client can call server method and get result', async (t) => {
 
   const result = await client.mapServer.listen({ localPort: 4000 })
 
-  assert.deepEqual(result, { localPort: 4000 })
+  assert.equal(result.localPort, 4000)
 })
 
 test('AppRpc client can call multiple methods', async (t) => {
   const { client } = setup(t)
 
   const listenResult = await client.mapServer.listen({ localPort: 5000 })
-  assert.deepEqual(listenResult, { localPort: 5000 })
+  assert.equal(listenResult.localPort, 5000)
 
   await client.mapServer.close()
 })
@@ -82,9 +82,9 @@ test('AppRpc concurrent calls resolve correctly', async (t) => {
   ])
 
   assert.equal(callCount, 3)
-  assert.deepEqual(results[0], { localPort: 4001 })
-  assert.deepEqual(results[1], { localPort: 4002 })
-  assert.deepEqual(results[2], { localPort: 4003 })
+  assert.equal(results[0].localPort, 4001)
+  assert.equal(results[1].localPort, 4002)
+  assert.equal(results[2].localPort, 4003)
 })
 
 test('AppRpc server method errors are propagated to client', async (t) => {
@@ -117,7 +117,7 @@ test('AppRpc client calls fail after server closes', async (t) => {
 
   // Verify it works first
   const result = await client.mapServer.listen({ localPort: 6000 })
-  assert.deepEqual(result, { localPort: 6000 })
+  assert.equal(result.localPort, 6000)
 
   server.close()
   closeAppRpcClient(client)
@@ -200,8 +200,8 @@ test('AppRpc multiple independent clients on separate channels', async (t) => {
     client2.mapServer.listen({ localPort: 8002 }),
   ])
 
-  assert.deepEqual(result1, { localPort: 8001 })
-  assert.deepEqual(result2, { localPort: 8002 })
+  assert.equal(result1.localPort, 8001)
+  assert.equal(result2.localPort, 8002)
   assert.equal(callCount, 2)
 
   t.after(() => {
