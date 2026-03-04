@@ -1,5 +1,6 @@
 import { createServer } from 'rpc-reflector/server.js'
 import {
+  APP_RPC_ID,
   MANAGER_CHANNEL_ID,
   MAPEO_RPC_ID,
   SubChannel,
@@ -118,5 +119,31 @@ export class MapeoRpcApi {
   async assertProjectExists(projectId) {
     const project = await this.#manager.getProject(projectId)
     return !!project
+  }
+}
+
+/**
+ * @typedef {object} RpcApi
+ * @property {object} mapServer
+ * @property {(options?: { localPort?: number, remotePort?: number }) => Promise<{ localPort: number, remotePort: number }>} mapServer.listen
+ * @property {() => Promise<void>} mapServer.close
+ */
+
+/**
+ * RPC messages that are not part of core, e.g. the different servers for maps,
+ * and in the future for serving blobs and icons (once extracted from core)
+ * @param {RpcApi} rpc
+ * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {Parameters<typeof createServer>[2]} [opts]
+ */
+export function createAppRpcServer(rpc, messagePort, opts) {
+  const appRpcChannel = new SubChannel(messagePort, APP_RPC_ID)
+  const appRpcServer = createServer(rpc, appRpcChannel, opts)
+  appRpcChannel.start()
+  return {
+    close() {
+      appRpcServer.close()
+      appRpcChannel.close()
+    },
   }
 }
