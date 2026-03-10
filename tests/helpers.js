@@ -1,5 +1,4 @@
 import { MessageChannel } from 'node:worker_threads'
-import RAM from 'random-access-memory'
 import { KeyManager } from '@mapeo/crypto'
 import { MapeoManager } from '@comapeo/core'
 import { createRequire } from 'node:module'
@@ -14,8 +13,9 @@ import { createMapeoServer } from '../src/server.js'
 const require = createRequire(import.meta.url)
 
 const COMAPEO_CORE_PKG_FOLDER = path.dirname(
-  require.resolve('@comapeo/core/package.json'),
+  path.dirname(require.resolve('@comapeo/core')),
 )
+
 const projectMigrationsFolder = path.join(
   COMAPEO_CORE_PKG_FOLDER,
   'drizzle/project',
