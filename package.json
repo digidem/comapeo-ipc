@@ -58,10 +58,10 @@
     "rpc-reflector": "^3.0.1"
   },
   "peerDependencies": {
-    "@comapeo/core": "^5.0.0"
+    "@comapeo/core": "^6.0.1"
   },
   "devDependencies": {
-    "@comapeo/core": "5.2.1",
+    "@comapeo/core": "6.0.1",
     "@comapeo/map-server": "1.0.0",
     "@digidem/types": "2.3.0",
     "@eslint/js": "9.39.2",
