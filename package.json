@@ -62,7 +62,6 @@
   },
   "devDependencies": {
     "@comapeo/core": "6.0.1",
-    "@comapeo/map-server": "1.0.0",
     "@digidem/types": "2.3.0",
     "@eslint/js": "9.39.2",
     "@mapeo/crypto": "1.0.0-alpha.10",
