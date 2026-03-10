@@ -12,9 +12,6 @@
     "noErrorTruncation": true,
     "noImplicitAny": true,
     "noUncheckedIndexedAccess": true,
-    "paths": {
-      "*": ["./node_modules/@digidem/types/vendor/*/index.d.ts"]
-    },
     "skipLibCheck": true,
     "strict": true,
     "target": "es2022",

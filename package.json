@@ -7,23 +7,22 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./client.js": {
-      "import": "./dist/client.js",
-      "types": "./dist/client.d.ts"
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
     },
     "./server.js": {
-      "import": "./dist/server.js",
-      "types": "./dist/server.d.ts"
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
     }
   },
   "engines": {
     "node": ">=18.17.1"
   },
   "scripts": {
-    "bench": "node bench/bench.js",
     "build": "tsc -p tsconfig.npm.json",
     "check:eslint": "eslint . --cache",
     "check:format": "prettier --check --cache .",
@@ -53,7 +52,7 @@
   },
   "homepage": "https://github.com/digidem/comapeo-ipc#readme",
   "dependencies": {
-    "eventemitter3": "^5.0.1",
+    "eventemitter3": "^5.0.4",
     "p-defer": "^4.0.1",
     "rpc-reflector": "^3.0.1"
   },
@@ -62,21 +61,16 @@
   },
   "devDependencies": {
     "@comapeo/core": "6.0.1",
-    "@comapeo/map-server": "1.0.0",
-    "@digidem/types": "2.3.0",
-    "@eslint/js": "9.39.2",
+    "@eslint/js": "9.39.4",
     "@mapeo/crypto": "1.0.0-alpha.10",
-    "@types/nanobench": "3.0.0",
-    "@types/node": "22.19.3",
-    "eslint": "9.39.2",
+    "@types/node": "24.12.0",
+    "eslint": "9.39.4",
     "fastify": "4.29.1",
-    "globals": "16.5.0",
+    "globals": "17.4.0",
     "husky": "9.1.7",
     "lint-staged": "15.5.2",
-    "nanobench": "3.0.0",
     "npm-run-all2": "7.0.2",
-    "prettier": "3.7.4",
-    "random-access-memory": "6.2.1",
+    "prettier": "3.8.1",
     "typescript": "5.9.3"
   }
 }
