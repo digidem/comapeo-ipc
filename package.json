@@ -52,7 +52,7 @@
   },
   "homepage": "https://github.com/digidem/comapeo-ipc#readme",
   "dependencies": {
-    "eventemitter3": "^5.0.1",
+    "eventemitter3": "^5.0.4",
     "p-defer": "^4.0.1",
     "rpc-reflector": "^3.0.1"
   },
