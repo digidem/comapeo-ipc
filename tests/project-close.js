@@ -66,6 +66,34 @@ test('server: re-open via client.getProject(id) works after close', async (t) =>
   assert.equal(fetched.docId, obs.docId)
 })
 
+// B1 — the architectural reason per-instance subchannel ids exist. After
+// close + re-open via getProject(id), the OLD wrapper reference and the
+// NEW one must live on different SubChannel ids, so a stale call posted
+// through the old wrapper cannot reach the freshly-opened project on the
+// server. Without per-instance ids, the stale call would land on the same
+// SubChannel as the new instance and silently succeed against it.
+test('server: stale call on old wrapper after re-open still rejects', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  const oldProject = await client.getProject(projectId)
+  await oldProject.$getProjectSettings()
+  await oldProject.close()
+
+  // Re-open the project. Server mints a fresh instance id; the new wrapper
+  // is on a different SubChannel.
+  const newProject = await client.getProject(projectId)
+  await newProject.$getProjectSettings()
+
+  // Stale call on the OLD wrapper must reject — the server's tombstone
+  // stub for the old instance answers, even though a fresh instance is
+  // open at the same projectId.
+  await assert.rejects(
+    () => oldProject.$getProjectSettings(),
+    /Project is closed/,
+  )
+})
+
 test('client: getProject after close returns a fresh reference (cache eviction)', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })

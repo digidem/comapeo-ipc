@@ -117,8 +117,10 @@ export function createMapeoClient(messagePort, opts = {}) {
     // never see deferred.promise.)
     deferred.promise.catch(() => {})
 
+    /** @type {string} */
+    let instanceId
     try {
-      await mapeoRpcClient.assertProjectExists(projectPublicId)
+      instanceId = await mapeoRpcClient.assertProjectExists(projectPublicId)
     } catch (err) {
       // Failed to open the project — drop the cached promise so a
       // subsequent getProject() call can retry instead of getting back
@@ -128,7 +130,11 @@ export function createMapeoClient(messagePort, opts = {}) {
       throw err
     }
 
-    const projectChannel = new SubChannel(messagePort, projectPublicId)
+    // Per-project messages are scoped to the current open instance, not the
+    // project's public id. If this project is closed and re-opened later,
+    // `assertProjectExists` returns a different instance id, so the new
+    // wrapper uses a fresh SubChannel that can't collide with the old one.
+    const projectChannel = new SubChannel(messagePort, instanceId)
 
     /** @type {import('rpc-reflector').ClientApi<import('@comapeo/core').MapeoProject>} */
     const projectClient = createClient(projectChannel, opts)

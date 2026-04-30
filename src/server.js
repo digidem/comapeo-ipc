@@ -13,32 +13,67 @@ import { extractMessageEventData } from './lib/utils.js'
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
 export function createMapeoServer(manager, messagePort, opts) {
+  // Per-project subchannels are keyed by an *instance id* — a string that is
+  // unique to one open lifetime of one project. Every time a project is
+  // opened (or re-opened after close), a new instance id is minted and
+  // returned to the client by `assertProjectExists`. The client uses it as
+  // the SubChannel identifier for that project's per-project messages.
+  //
+  // This means stale post-close calls from a client wrapper that captured
+  // the old instance id cannot collide with a freshly-opened project: they
+  // arrive on a different SubChannel id and route to the closed-instance
+  // tombstone branch in `handleMessage` instead of the new project's server.
+
   /** @type {Map<string, { close: () => void }>} */
-  const existingProjectServers = new Map()
+  const existingInstanceServers = new Map()
 
   /** @type {Map<string, SubChannel>} */
-  const existingProjectChannels = new Map()
+  const existingInstanceChannels = new Map()
+
+  /** @type {Map<string, string>} projectId → current open instance id */
+  const currentInstanceForProject = new Map()
 
   /**
-   * Tombstone of project IDs that have been closed. Subsequent messages for
-   * these IDs are routed through a stub handler that throws "Project is
-   * closed" rather than silently re-opening the project. Cleared when the
-   * client calls `getProject(id)` again (which goes through
-   * `assertProjectExists`).
+   * Tombstone of instance ids that have been closed. A stale per-project
+   * message arriving on one of these ids gets a stub rpc-server (built
+   * lazily on demand) that throws "Project is closed". Tombstones are
+   * never cleared; they're just strings, so the cost per closed instance
+   * is trivial and bounded by the number of opens-then-closes in a session.
    * @type {Set<string>}
    */
-  const closedProjectIds = new Set()
+  const closedInstanceIds = new Set()
 
-  const mapeoRpcApi = new MapeoRpcApi(manager, {
-    onAssertProjectExists: (id) => {
-      if (!closedProjectIds.has(id)) return
-      closedProjectIds.delete(id)
-      const existingChannel = existingProjectChannels.get(id)
-      const existingServer = existingProjectServers.get(id)
-      if (existingServer) existingServer.close()
-      if (existingChannel) existingChannel.close()
-      existingProjectChannels.delete(id)
-      existingProjectServers.delete(id)
+  let instanceCounter = 0
+
+  const mapeoRpcApi = new MapeoRpcApi({
+    getProjectInstance: async (projectId) => {
+      const existing = currentInstanceForProject.get(projectId)
+      if (existing) return existing
+
+      // Throws if the project doesn't exist; the rejection propagates back
+      // to the client through rpc-reflector's standard error response.
+      const project = await manager.getProject(projectId)
+
+      const instanceId = `${projectId}:${++instanceCounter}`
+      const projectChannel = new SubChannel(messagePort, instanceId)
+      existingInstanceChannels.set(instanceId, projectChannel)
+
+      project.once('close', () => {
+        closedInstanceIds.add(instanceId)
+        currentInstanceForProject.delete(projectId)
+        existingInstanceServers.get(instanceId)?.close()
+        existingInstanceServers.delete(instanceId)
+        projectChannel.close()
+        existingInstanceChannels.delete(instanceId)
+      })
+
+      const { close } = createServer(project, projectChannel, opts)
+      existingInstanceServers.set(instanceId, { close })
+
+      projectChannel.start()
+
+      currentInstanceForProject.set(projectId, instanceId)
+      return instanceId
     },
   })
 
@@ -57,20 +92,18 @@ export function createMapeoServer(manager, messagePort, opts) {
     close() {
       messagePort.removeEventListener('message', handleMessage)
 
-      for (const [id, server] of existingProjectServers.entries()) {
+      for (const [id, server] of existingInstanceServers.entries()) {
         server.close()
-
-        const channel = existingProjectChannels.get(id)
-
+        const channel = existingInstanceChannels.get(id)
         if (channel) {
           channel.close()
-          existingProjectChannels.delete(id)
+          existingInstanceChannels.delete(id)
         }
-
-        existingProjectServers.delete(id)
+        existingInstanceServers.delete(id)
       }
 
-      closedProjectIds.clear()
+      currentInstanceForProject.clear()
+      closedInstanceIds.clear()
       managerServer.close()
       managerChannel.close()
       mapeoRpcServer.close()
@@ -79,9 +112,15 @@ export function createMapeoServer(manager, messagePort, opts) {
   }
 
   /**
+   * Handles per-project messages. Real-instance messages are caught by the
+   * SubChannel's own listener (registered in its constructor) and dispatched
+   * to the rpc-reflector server — this outer handler only fires for ids
+   * that don't have an active SubChannel, where we either install a
+   * closed-instance stub or drop the message as unknown.
+   *
    * @param {unknown} payload
    */
-  async function handleMessage(payload) {
+  function handleMessage(payload) {
     const data = extractMessageEventData(payload)
 
     if (!data || typeof data !== 'object' || !('message' in data)) return
@@ -90,72 +129,34 @@ export function createMapeoServer(manager, messagePort, opts) {
 
     if (!id || id === MANAGER_CHANNEL_ID || id === MAPEO_RPC_ID) return
 
-    if (existingProjectChannels.has(id)) return
+    if (existingInstanceChannels.has(id)) return
 
-    // Tombstone branch: project was closed; build a stub rpc-server that
-    // throws "Project is closed" for any method call. Lazy — only allocated
-    // on the first stale message for this id. The error rides the standard
-    // serializeError → RESPONSE path.
-    if (closedProjectIds.has(id)) {
+    if (closedInstanceIds.has(id)) {
+      // Stale message for a closed project instance. Build a stub
+      // rpc-server bound to a Proxy that throws "Project is closed" for
+      // any apply. The error rides the standard serializeError → RESPONSE
+      // path. The stub holds no reference to the (already-released)
+      // project. The stub stays alive on `existingInstanceChannels`/
+      // `existingInstanceServers` for the rest of the session, so further
+      // stale messages on this instance id route through the SubChannel's
+      // own listener directly without re-entering this branch.
       const stubChannel = new SubChannel(messagePort, id)
-      existingProjectChannels.set(id, stubChannel)
+      existingInstanceChannels.set(id, stubChannel)
       const stubHandler = createClosedProjectStub()
       const { close: closeStubServer } = createServer(
         stubHandler,
         stubChannel,
         opts,
       )
-      existingProjectServers.set(id, { close: closeStubServer })
-      stubChannel.emit('message', data.message)
+      existingInstanceServers.set(id, { close: closeStubServer })
       stubChannel.start()
+      stubChannel.emit('message', data.message)
       return
     }
 
-    const projectChannel = new SubChannel(messagePort, id)
-    existingProjectChannels.set(id, projectChannel)
-
-    let project
-    try {
-      project = await manager.getProject(id)
-    } catch (err) {
-      // Replace with a stub server that returns the actual error to the
-      // client, so the awaiting RPC call rejects with the real reason
-      // (e.g. NotFoundError) instead of timing out.
-      const errorStubHandler = createErrorStub(err)
-      const { close: closeErrorStubServer } = createServer(
-        errorStubHandler,
-        projectChannel,
-        opts,
-      )
-      existingProjectServers.set(id, { close: closeErrorStubServer })
-      projectChannel.emit('message', data.message)
-      projectChannel.start()
-      // Tear down on next tick so the error response is sent first.
-      queueMicrotask(() => {
-        closeErrorStubServer()
-        projectChannel.close()
-        existingProjectChannels.delete(id)
-        existingProjectServers.delete(id)
-      })
-      return
-    }
-
-    project.once('close', () => {
-      closedProjectIds.add(id)
-      projectChannel.close()
-      existingProjectChannels.delete(id)
-      // Close the RPC server when the project is closed
-      close()
-      existingProjectServers.delete(id)
-    })
-
-    const { close } = createServer(project, projectChannel, opts)
-
-    existingProjectServers.set(id, { close })
-
-    projectChannel.emit('message', data.message)
-
-    projectChannel.start()
+    // Unknown instance id — silently drop. Could happen for a malformed
+    // message or a stale message from a prior `comapeo-ipc` session sharing
+    // the same messagePort.
   }
 }
 
@@ -164,21 +165,13 @@ function createClosedProjectStub() {
 }
 
 /**
- * @param {unknown} err
- */
-function createErrorStub(err) {
-  return createThrowingProxy(() =>
-    err instanceof Error ? err : new Error(String(err)),
-  )
-}
-
-/**
  * Build a Proxy that responds truthfully to property/has checks at any depth
  * and throws `makeError()` when applied as a function. The outer target is a
  * plain object so the proxy passes rpc-reflector's `typeof handler ===
- * 'object'` invariant; nested accesses return a function-target proxy so that
- * `applyNestedMethod` finds `typeof === 'function'` and triggers the apply
- * trap.
+ * 'object'` invariant (the outer is intentionally non-callable — only nested
+ * function-target proxies returned from `get` are invoked). Nested accesses
+ * return a function-target proxy so that `applyNestedMethod` finds
+ * `typeof === 'function'` and triggers the apply trap.
  *
  * @param {() => Error} makeError
  */
@@ -199,29 +192,27 @@ function createThrowingProxy(makeError) {
 }
 
 export class MapeoRpcApi {
-  #manager
-  #onAssertProjectExists
+  #getProjectInstance
 
   /**
-   * @param {import('@comapeo/core').MapeoManager} manager
-   * @param {{ onAssertProjectExists?: (projectId: string) => void }} [opts]
+   * @param {{ getProjectInstance: (projectId: string) => Promise<string> }} opts
    */
-  constructor(manager, { onAssertProjectExists } = {}) {
-    this.#manager = manager
-    this.#onAssertProjectExists = onAssertProjectExists
+  constructor({ getProjectInstance }) {
+    this.#getProjectInstance = getProjectInstance
   }
 
   /**
+   * Verify the project exists, opening it (or re-opening it after close)
+   * if necessary, and return the per-instance subchannel id the client
+   * should use for per-project messages. The returned id is unique to the
+   * current open lifetime of the project — closing and re-opening yields
+   * a different id.
+   *
    * @param {string} projectId
-   * @returns {Promise<boolean>}
+   * @returns {Promise<string>} instance id
    */
   async assertProjectExists(projectId) {
-    const project = await this.#manager.getProject(projectId)
-    // Re-open hook: clear tombstone / stub for this id so the next
-    // per-project message creates a fresh SubChannel + rpc-server bound to
-    // the new project instance.
-    this.#onAssertProjectExists?.(projectId)
-    return !!project
+    return this.#getProjectInstance(projectId)
   }
 }
 
