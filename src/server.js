@@ -19,7 +19,28 @@ export function createMapeoServer(manager, messagePort, opts) {
   /** @type {Map<string, SubChannel>} */
   const existingProjectChannels = new Map()
 
-  const mapeoRpcApi = new MapeoRpcApi(manager)
+  /**
+   * Tombstone of project IDs that have been closed. Subsequent messages for
+   * these IDs are routed through a stub handler that throws "Project is
+   * closed" rather than silently re-opening the project. Cleared when the
+   * client calls `getProject(id)` again (which goes through
+   * `assertProjectExists`).
+   * @type {Set<string>}
+   */
+  const closedProjectIds = new Set()
+
+  const mapeoRpcApi = new MapeoRpcApi(manager, {
+    onAssertProjectExists: (id) => {
+      if (!closedProjectIds.has(id)) return
+      closedProjectIds.delete(id)
+      const existingChannel = existingProjectChannels.get(id)
+      const existingServer = existingProjectServers.get(id)
+      if (existingServer) existingServer.close()
+      if (existingChannel) existingChannel.close()
+      existingProjectChannels.delete(id)
+      existingProjectServers.delete(id)
+    },
+  })
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
   const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
@@ -49,6 +70,7 @@ export function createMapeoServer(manager, messagePort, opts) {
         existingProjectServers.delete(id)
       }
 
+      closedProjectIds.clear()
       managerServer.close()
       managerChannel.close()
       mapeoRpcServer.close()
@@ -70,21 +92,56 @@ export function createMapeoServer(manager, messagePort, opts) {
 
     if (existingProjectChannels.has(id)) return
 
+    // Tombstone branch: project was closed; build a stub rpc-server that
+    // throws "Project is closed" for any method call. Lazy — only allocated
+    // on the first stale message for this id. The error rides the standard
+    // serializeError → RESPONSE path.
+    if (closedProjectIds.has(id)) {
+      const stubChannel = new SubChannel(messagePort, id)
+      existingProjectChannels.set(id, stubChannel)
+      const stubHandler = createClosedProjectStub()
+      const { close: closeStubServer } = createServer(
+        stubHandler,
+        stubChannel,
+        opts,
+      )
+      existingProjectServers.set(id, { close: closeStubServer })
+      stubChannel.emit('message', data.message)
+      stubChannel.start()
+      return
+    }
+
     const projectChannel = new SubChannel(messagePort, id)
     existingProjectChannels.set(id, projectChannel)
 
     let project
     try {
       project = await manager.getProject(id)
-    } catch (_err) {
-      // TODO: how to respond to client so that method errors?
-      projectChannel.close()
-      existingProjectChannels.delete(id)
-      existingProjectServers.delete(id)
+    } catch (err) {
+      // Replace with a stub server that returns the actual error to the
+      // client, so the awaiting RPC call rejects with the real reason
+      // (e.g. NotFoundError) instead of timing out.
+      const errorStubHandler = createErrorStub(err)
+      const { close: closeErrorStubServer } = createServer(
+        errorStubHandler,
+        projectChannel,
+        opts,
+      )
+      existingProjectServers.set(id, { close: closeErrorStubServer })
+      projectChannel.emit('message', data.message)
+      projectChannel.start()
+      // Tear down on next tick so the error response is sent first.
+      queueMicrotask(() => {
+        closeErrorStubServer()
+        projectChannel.close()
+        existingProjectChannels.delete(id)
+        existingProjectServers.delete(id)
+      })
       return
     }
 
     project.once('close', () => {
+      closedProjectIds.add(id)
       projectChannel.close()
       existingProjectChannels.delete(id)
       // Close the RPC server when the project is closed
@@ -102,14 +159,56 @@ export function createMapeoServer(manager, messagePort, opts) {
   }
 }
 
+function createClosedProjectStub() {
+  return createThrowingProxy(() => new Error('Project is closed'))
+}
+
+/**
+ * @param {unknown} err
+ */
+function createErrorStub(err) {
+  return createThrowingProxy(() =>
+    err instanceof Error ? err : new Error(String(err)),
+  )
+}
+
+/**
+ * Build a Proxy that responds truthfully to property/has checks at any depth
+ * and throws `makeError()` when applied as a function. The outer target is a
+ * plain object so the proxy passes rpc-reflector's `typeof handler ===
+ * 'object'` invariant; nested accesses return a function-target proxy so that
+ * `applyNestedMethod` finds `typeof === 'function'` and triggers the apply
+ * trap.
+ *
+ * @param {() => Error} makeError
+ */
+function createThrowingProxy(makeError) {
+  /** @type {ProxyHandler<any>} */
+  const handler = {
+    get() {
+      return new Proxy(function () {}, handler)
+    },
+    has() {
+      return true
+    },
+    apply() {
+      throw makeError()
+    },
+  }
+  return new Proxy({}, handler)
+}
+
 export class MapeoRpcApi {
   #manager
+  #onAssertProjectExists
 
   /**
    * @param {import('@comapeo/core').MapeoManager} manager
+   * @param {{ onAssertProjectExists?: (projectId: string) => void }} [opts]
    */
-  constructor(manager) {
+  constructor(manager, { onAssertProjectExists } = {}) {
     this.#manager = manager
+    this.#onAssertProjectExists = onAssertProjectExists
   }
 
   /**
@@ -118,6 +217,10 @@ export class MapeoRpcApi {
    */
   async assertProjectExists(projectId) {
     const project = await this.#manager.getProject(projectId)
+    // Re-open hook: clear tombstone / stub for this id so the next
+    // per-project message creates a fresh SubChannel + rpc-server bound to
+    // the new project instance.
+    this.#onAssertProjectExists?.(projectId)
     return !!project
   }
 }

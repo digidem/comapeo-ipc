@@ -89,9 +89,19 @@ export function createMapeoClient(messagePort, opts = {}) {
 
     projectClientPromises.set(projectPublicId, deferred.promise)
 
+    // Attach a no-op handler so that if the deferred rejects below before
+    // any other caller has awaited it, we don't get an unhandled rejection.
+    // (Removing the cache entry on failure means concurrent callers may
+    // never see deferred.promise.)
+    deferred.promise.catch(() => {})
+
     try {
       await mapeoRpcClient.assertProjectExists(projectPublicId)
     } catch (err) {
+      // Failed to open the project — drop the cached promise so a
+      // subsequent getProject() call can retry instead of getting back
+      // the same rejected promise.
+      projectClientPromises.delete(projectPublicId)
       deferred.reject(err)
       throw err
     }
@@ -102,10 +112,64 @@ export function createMapeoClient(messagePort, opts = {}) {
     const projectClient = createClient(projectChannel, opts)
     projectChannel.start()
 
-    deferred.resolve(projectClient)
-
-    return projectClient
+    // Wrap the projectClient to intercept `.close()` so we can tear down
+    // local state (cache entry, rpc-reflector client, SubChannel) after
+    // the wire close completes. Without this, an application-held
+    // reference to the project remains usable after close — calls would
+    // silently re-open the project on the server. After close, string
+    // property accesses return a local stub that rejects with
+    // `Project is closed` so post-close method calls fail synchronously
+    // (no IPC round trip, no waiting for the rpc-reflector timeout).
+    // Symbol property accesses (notably `closeProp` used by
+    // `createClient.close`) still delegate via Reflect.get so the
+    // manager-level close path (`closeMapeoClient`) keeps working.
+    let closed = false
+    const closedStub = createClosedClientStub()
+    const wrappedProjectClient = new Proxy(projectClient, {
+      get(target, prop, receiver) {
+        if (prop === 'close') {
+          return async () => {
+            try {
+              await target.close()
+            } finally {
+              closed = true
+              projectClientPromises.delete(projectPublicId)
+              createClient.close(target)
+              projectChannel.close()
+            }
+          }
+        }
+        if (closed && typeof prop === 'string') {
+          return Reflect.get(closedStub, prop)
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    deferred.resolve(wrappedProjectClient)
+    return wrappedProjectClient
   }
+}
+
+/**
+ * Build a Proxy that responds truthfully to property access at any depth and
+ * returns a rejected `Promise<Project is closed>` when applied as a function.
+ * Mirrors the server-side stub shape so post-close method calls on a closed
+ * project reference fail locally without an IPC round trip.
+ */
+function createClosedClientStub() {
+  /** @type {ProxyHandler<any>} */
+  const handler = {
+    get() {
+      return new Proxy(function () {}, handler)
+    },
+    has() {
+      return true
+    },
+    apply() {
+      return Promise.reject(new Error('Project is closed'))
+    },
+  }
+  return new Proxy({}, handler)
 }
 
 /**
