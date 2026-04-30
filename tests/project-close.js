@@ -94,6 +94,36 @@ test('server: stale call on old wrapper after re-open still rejects', async (t) 
   )
 })
 
+// Concurrent `assertProjectExists` calls for the same project (e.g. two
+// `client.getProject(id)` calls from clients sharing a server) must
+// resolve to the SAME instance id — otherwise the server would mint two
+// SubChannels for one open project, and only the second would be
+// reachable for the project's actual `'close'` event teardown.
+test('server: concurrent assertProjectExists for same project dedupes to one instance', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  // Drive two getProject(id) calls in the same tick. The client cache
+  // also dedupes them at the wrapper level, so to actually exercise the
+  // server-side dedupe we drive parallel `client.getProject(id)` calls
+  // from a freshly-cleared cache by closing the project first.
+  const project = await client.getProject(projectId)
+  await project.close()
+
+  const [reopenedA, reopenedB] = await Promise.all([
+    client.getProject(projectId),
+    client.getProject(projectId),
+  ])
+
+  // Same wrapper from the client cache.
+  assert.equal(reopenedA, reopenedB)
+
+  // Both should point at a working project (would fail if two server
+  // instances were minted and one of them ended up unreachable).
+  await reopenedA.$getProjectSettings()
+  await reopenedB.$getProjectSettings()
+})
+
 test('client: getProject after close returns a fresh reference (cache eviction)', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })

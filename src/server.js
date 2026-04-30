@@ -30,15 +30,25 @@ export function createMapeoServer(manager, messagePort, opts) {
   /** @type {Map<string, SubChannel>} */
   const existingInstanceChannels = new Map()
 
-  /** @type {Map<string, string>} projectId → current open instance id */
+  /**
+   * projectId → in-flight or resolved promise for the current open instance
+   * id. Storing the promise (rather than the resolved string) dedupes
+   * concurrent `assertProjectExists` calls for the same project so they all
+   * resolve to the same instance id, instead of racing into separate
+   * `manager.getProject` calls that mint duplicate SubChannels.
+   * @type {Map<string, Promise<string>>}
+   */
   const currentInstanceForProject = new Map()
 
   /**
-   * Tombstone of instance ids that have been closed. A stale per-project
-   * message arriving on one of these ids gets a stub rpc-server (built
-   * lazily on demand) that throws "Project is closed". Tombstones are
-   * never cleared; they're just strings, so the cost per closed instance
-   * is trivial and bounded by the number of opens-then-closes in a session.
+   * Tombstone of instance ids that have been closed. The id string itself
+   * is cheap (~30 bytes); however the *first* stale message that arrives
+   * on a tombstoned id materialises a stub SubChannel + rpc-reflector
+   * server (in `existingInstanceChannels` / `existingInstanceServers`)
+   * that lives until the top-level server close. So a project that's
+   * closed but never receives a stale call costs ~30 bytes; one that does
+   * costs the size of a SubChannel + stub server. Bounded by the number
+   * of distinct closed instance ids that ever receive a stale message.
    * @type {Set<string>}
    */
   const closedInstanceIds = new Set()
@@ -46,36 +56,53 @@ export function createMapeoServer(manager, messagePort, opts) {
   let instanceCounter = 0
 
   const mapeoRpcApi = new MapeoRpcApi({
-    getProjectInstance: async (projectId) => {
+    getProjectInstance(projectId) {
       const existing = currentInstanceForProject.get(projectId)
       if (existing) return existing
 
-      // Throws if the project doesn't exist; the rejection propagates back
-      // to the client through rpc-reflector's standard error response.
-      const project = await manager.getProject(projectId)
-
-      const instanceId = `${projectId}:${++instanceCounter}`
-      const projectChannel = new SubChannel(messagePort, instanceId)
-      existingInstanceChannels.set(instanceId, projectChannel)
-
-      project.once('close', () => {
-        closedInstanceIds.add(instanceId)
-        currentInstanceForProject.delete(projectId)
-        existingInstanceServers.get(instanceId)?.close()
-        existingInstanceServers.delete(instanceId)
-        projectChannel.close()
-        existingInstanceChannels.delete(instanceId)
+      const promise = openProjectInstance(projectId)
+      currentInstanceForProject.set(projectId, promise)
+      // If the open fails, evict so a subsequent retry can attempt again
+      // instead of getting back the same rejected promise. (The close
+      // listener handles eviction on the success path.)
+      promise.catch(() => {
+        if (currentInstanceForProject.get(projectId) === promise) {
+          currentInstanceForProject.delete(projectId)
+        }
       })
-
-      const { close } = createServer(project, projectChannel, opts)
-      existingInstanceServers.set(instanceId, { close })
-
-      projectChannel.start()
-
-      currentInstanceForProject.set(projectId, instanceId)
-      return instanceId
+      return promise
     },
   })
+
+  /**
+   * @param {string} projectId
+   * @returns {Promise<string>}
+   */
+  async function openProjectInstance(projectId) {
+    // Throws if the project doesn't exist; the rejection propagates back
+    // to the client through rpc-reflector's standard error response.
+    const project = await manager.getProject(projectId)
+
+    const instanceId = `${projectId}:${++instanceCounter}`
+    const projectChannel = new SubChannel(messagePort, instanceId)
+    existingInstanceChannels.set(instanceId, projectChannel)
+
+    project.once('close', () => {
+      closedInstanceIds.add(instanceId)
+      currentInstanceForProject.delete(projectId)
+      existingInstanceServers.get(instanceId)?.close()
+      existingInstanceServers.delete(instanceId)
+      projectChannel.close()
+      existingInstanceChannels.delete(instanceId)
+    })
+
+    const { close } = createServer(project, projectChannel, opts)
+    existingInstanceServers.set(instanceId, { close })
+
+    projectChannel.start()
+
+    return instanceId
+  }
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
   const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
