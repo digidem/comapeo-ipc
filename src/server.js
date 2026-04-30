@@ -13,13 +13,96 @@ import { extractMessageEventData } from './lib/utils.js'
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
 export function createMapeoServer(manager, messagePort, opts) {
+  // Per-project subchannels are keyed by an *instance id* — a string that is
+  // unique to one open lifetime of one project. Every time a project is
+  // opened (or re-opened after close), a new instance id is minted and
+  // returned to the client by `assertProjectExists`. The client uses it as
+  // the SubChannel identifier for that project's per-project messages.
+  //
+  // This means stale post-close calls from a client wrapper that captured
+  // the old instance id cannot collide with a freshly-opened project: they
+  // arrive on a different SubChannel id and route to the closed-instance
+  // tombstone branch in `handleMessage` instead of the new project's server.
+
   /** @type {Map<string, { close: () => void }>} */
-  const existingProjectServers = new Map()
+  const existingInstanceServers = new Map()
 
   /** @type {Map<string, SubChannel>} */
-  const existingProjectChannels = new Map()
+  const existingInstanceChannels = new Map()
 
-  const mapeoRpcApi = new MapeoRpcApi(manager)
+  /**
+   * projectId → in-flight or resolved promise for the current open instance
+   * id. Storing the promise (rather than the resolved string) dedupes
+   * concurrent `assertProjectExists` calls for the same project so they all
+   * resolve to the same instance id, instead of racing into separate
+   * `manager.getProject` calls that mint duplicate SubChannels.
+   * @type {Map<string, Promise<string>>}
+   */
+  const currentInstanceForProject = new Map()
+
+  /**
+   * Tombstone of instance ids that have been closed. The id string itself
+   * is cheap (~30 bytes); however the *first* stale message that arrives
+   * on a tombstoned id materialises a stub SubChannel + rpc-reflector
+   * server (in `existingInstanceChannels` / `existingInstanceServers`)
+   * that lives until the top-level server close. So a project that's
+   * closed but never receives a stale call costs ~30 bytes; one that does
+   * costs the size of a SubChannel + stub server. Bounded by the number
+   * of distinct closed instance ids that ever receive a stale message.
+   * @type {Set<string>}
+   */
+  const closedInstanceIds = new Set()
+
+  let instanceCounter = 0
+
+  const mapeoRpcApi = new MapeoRpcApi({
+    getProjectInstance(projectId) {
+      const existing = currentInstanceForProject.get(projectId)
+      if (existing) return existing
+
+      const promise = openProjectInstance(projectId)
+      currentInstanceForProject.set(projectId, promise)
+      // If the open fails, evict so a subsequent retry can attempt again
+      // instead of getting back the same rejected promise. (The close
+      // listener handles eviction on the success path.)
+      promise.catch(() => {
+        if (currentInstanceForProject.get(projectId) === promise) {
+          currentInstanceForProject.delete(projectId)
+        }
+      })
+      return promise
+    },
+  })
+
+  /**
+   * @param {string} projectId
+   * @returns {Promise<string>}
+   */
+  async function openProjectInstance(projectId) {
+    // Throws if the project doesn't exist; the rejection propagates back
+    // to the client through rpc-reflector's standard error response.
+    const project = await manager.getProject(projectId)
+
+    const instanceId = `${projectId}:${++instanceCounter}`
+    const projectChannel = new SubChannel(messagePort, instanceId)
+    existingInstanceChannels.set(instanceId, projectChannel)
+
+    project.once('close', () => {
+      closedInstanceIds.add(instanceId)
+      currentInstanceForProject.delete(projectId)
+      existingInstanceServers.get(instanceId)?.close()
+      existingInstanceServers.delete(instanceId)
+      projectChannel.close()
+      existingInstanceChannels.delete(instanceId)
+    })
+
+    const { close } = createServer(project, projectChannel, opts)
+    existingInstanceServers.set(instanceId, { close })
+
+    projectChannel.start()
+
+    return instanceId
+  }
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
   const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
@@ -36,19 +119,18 @@ export function createMapeoServer(manager, messagePort, opts) {
     close() {
       messagePort.removeEventListener('message', handleMessage)
 
-      for (const [id, server] of existingProjectServers.entries()) {
+      for (const [id, server] of existingInstanceServers.entries()) {
         server.close()
-
-        const channel = existingProjectChannels.get(id)
-
+        const channel = existingInstanceChannels.get(id)
         if (channel) {
           channel.close()
-          existingProjectChannels.delete(id)
+          existingInstanceChannels.delete(id)
         }
-
-        existingProjectServers.delete(id)
+        existingInstanceServers.delete(id)
       }
 
+      currentInstanceForProject.clear()
+      closedInstanceIds.clear()
       managerServer.close()
       managerChannel.close()
       mapeoRpcServer.close()
@@ -57,9 +139,15 @@ export function createMapeoServer(manager, messagePort, opts) {
   }
 
   /**
+   * Handles per-project messages. Real-instance messages are caught by the
+   * SubChannel's own listener (registered in its constructor) and dispatched
+   * to the rpc-reflector server — this outer handler only fires for ids
+   * that don't have an active SubChannel, where we either install a
+   * closed-instance stub or drop the message as unknown.
+   *
    * @param {unknown} payload
    */
-  async function handleMessage(payload) {
+  function handleMessage(payload) {
     const data = extractMessageEventData(payload)
 
     if (!data || typeof data !== 'object' || !('message' in data)) return
@@ -68,57 +156,90 @@ export function createMapeoServer(manager, messagePort, opts) {
 
     if (!id || id === MANAGER_CHANNEL_ID || id === MAPEO_RPC_ID) return
 
-    if (existingProjectChannels.has(id)) return
+    if (existingInstanceChannels.has(id)) return
 
-    const projectChannel = new SubChannel(messagePort, id)
-    existingProjectChannels.set(id, projectChannel)
-
-    let project
-    try {
-      project = await manager.getProject(id)
-    } catch (_err) {
-      // TODO: how to respond to client so that method errors?
-      projectChannel.close()
-      existingProjectChannels.delete(id)
-      existingProjectServers.delete(id)
+    if (closedInstanceIds.has(id)) {
+      // Stale message for a closed project instance. Build a stub
+      // rpc-server bound to a Proxy that throws "Project is closed" for
+      // any apply. The error rides the standard serializeError → RESPONSE
+      // path. The stub holds no reference to the (already-released)
+      // project. The stub stays alive on `existingInstanceChannels`/
+      // `existingInstanceServers` for the rest of the session, so further
+      // stale messages on this instance id route through the SubChannel's
+      // own listener directly without re-entering this branch.
+      const stubChannel = new SubChannel(messagePort, id)
+      existingInstanceChannels.set(id, stubChannel)
+      const stubHandler = createClosedProjectStub()
+      const { close: closeStubServer } = createServer(
+        stubHandler,
+        stubChannel,
+        opts,
+      )
+      existingInstanceServers.set(id, { close: closeStubServer })
+      stubChannel.start()
+      stubChannel.emit('message', data.message)
       return
     }
 
-    project.once('close', () => {
-      projectChannel.close()
-      existingProjectChannels.delete(id)
-      // Close the RPC server when the project is closed
-      close()
-      existingProjectServers.delete(id)
-    })
-
-    const { close } = createServer(project, projectChannel, opts)
-
-    existingProjectServers.set(id, { close })
-
-    projectChannel.emit('message', data.message)
-
-    projectChannel.start()
+    // Unknown instance id — silently drop. Could happen for a malformed
+    // message or a stale message from a prior `comapeo-ipc` session sharing
+    // the same messagePort.
   }
 }
 
+function createClosedProjectStub() {
+  return createThrowingProxy(() => new Error('Project is closed'))
+}
+
+/**
+ * Build a Proxy that responds truthfully to property/has checks at any depth
+ * and throws `makeError()` when applied as a function. The outer target is a
+ * plain object so the proxy passes rpc-reflector's `typeof handler ===
+ * 'object'` invariant (the outer is intentionally non-callable — only nested
+ * function-target proxies returned from `get` are invoked). Nested accesses
+ * return a function-target proxy so that `applyNestedMethod` finds
+ * `typeof === 'function'` and triggers the apply trap.
+ *
+ * @param {() => Error} makeError
+ */
+function createThrowingProxy(makeError) {
+  /** @type {ProxyHandler<any>} */
+  const handler = {
+    get() {
+      return new Proxy(function () {}, handler)
+    },
+    has() {
+      return true
+    },
+    apply() {
+      throw makeError()
+    },
+  }
+  return new Proxy({}, handler)
+}
+
 export class MapeoRpcApi {
-  #manager
+  #getProjectInstance
 
   /**
-   * @param {import('@comapeo/core').MapeoManager} manager
+   * @param {{ getProjectInstance: (projectId: string) => Promise<string> }} opts
    */
-  constructor(manager) {
-    this.#manager = manager
+  constructor({ getProjectInstance }) {
+    this.#getProjectInstance = getProjectInstance
   }
 
   /**
+   * Verify the project exists, opening it (or re-opening it after close)
+   * if necessary, and return the per-instance subchannel id the client
+   * should use for per-project messages. The returned id is unique to the
+   * current open lifetime of the project — closing and re-opening yields
+   * a different id.
+   *
    * @param {string} projectId
-   * @returns {Promise<boolean>}
+   * @returns {Promise<string>} instance id
    */
   async assertProjectExists(projectId) {
-    const project = await this.#manager.getProject(projectId)
-    return !!project
+    return this.#getProjectInstance(projectId)
   }
 }
 

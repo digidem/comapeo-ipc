@@ -30,7 +30,7 @@
     "check": "npm-run-all --parallel --continue-on-error --print-label --aggregate-output check:*",
     "prepack": "npm run build",
     "prepare": "husky",
-    "test": "node --test tests/*.js"
+    "test": "node --expose-gc --test tests/*.js"
   },
   "files": [
     "dist"
