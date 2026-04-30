@@ -157,6 +157,57 @@ test('A method call posted before close completes still resolves', async (t) => 
   assert.equal(settings.name, 'mapeo')
 })
 
+// Repeatedly opening and closing the same project must not accumulate
+// closed instances in IPC's per-project bookkeeping. An earlier draft of
+// this PR risked exactly that — every close would have left a stub
+// rpc-server (or a wrapper Proxy) bound to the closed MapeoProject,
+// growing linearly with the number of cycles.
+//
+// `@comapeo/core` itself retains the most-recently-closed MapeoProject
+// (verified independently), so we can't assert "all closed instances are
+// GC'd". What we *can* assert is that the IPC layer doesn't add to that
+// retention: after N cycles, at most one closed instance survives — the
+// upstream-retained latest one — not all N.
+//
+// Runs only when `global.gc` is available (npm test passes --expose-gc).
+test('Repeatedly opening and closing the same project does not retain prior instances', async (t) => {
+  if (typeof global.gc !== 'function') {
+    t.skip('Run with --expose-gc to verify cycle retention')
+    return
+  }
+
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  const N = 5
+  /** @type {Array<WeakRef<object>>} */
+  const refs = []
+  for (let i = 0; i < N; i++) {
+    refs.push(await cycleAndCaptureWeakRef())
+  }
+
+  /** @returns {Promise<WeakRef<object>>} */
+  async function cycleAndCaptureWeakRef() {
+    const project = await client.getProject(projectId)
+    await project.$getProjectSettings()
+    const serverProject = await serverManager.getProject(projectId)
+    const ref = new WeakRef(serverProject)
+    await project.close()
+    return ref
+  }
+
+  for (let i = 0; i < 20; i++) {
+    global.gc()
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+
+  const survivors = refs.filter((ref) => ref.deref() !== undefined).length
+  assert.ok(
+    survivors <= 1,
+    `${survivors} of ${N} closed instances retained — expected at most 1 (the upstream-retained latest). A higher count means IPC is accumulating closed instances cycle over cycle.`,
+  )
+})
+
 test('After a failed getProject, a subsequent getProject for a real project succeeds', async (t) => {
   const { client } = setup(t)
 
