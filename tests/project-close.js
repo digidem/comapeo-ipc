@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { setup } from './helpers.js'
 
-test('server: methods on a closed project reject with "Project is closed"', async (t) => {
+test('After close, methods on the closed reference reject', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
@@ -16,7 +16,7 @@ test('server: methods on a closed project reject with "Project is closed"', asyn
   await assert.rejects(() => project.$getProjectSettings(), /Project is closed/)
 })
 
-test('server: nested namespaces reject after close', async (t) => {
+test('After close, nested-namespace methods on the closed reference reject', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
@@ -41,7 +41,7 @@ test('server: nested namespaces reject after close', async (t) => {
   )
 })
 
-test('server: re-open via client.getProject(id) works after close', async (t) => {
+test('After close, observations created earlier are still readable via a re-opened reference', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
@@ -54,25 +54,24 @@ test('server: re-open via client.getProject(id) works after close', async (t) =>
 
   await project.close()
 
-  // Re-open via getProject — should succeed and methods should work.
   const reopened = await client.getProject(projectId)
   assert.notEqual(
     reopened,
     project,
-    'reopened reference should be a fresh proxy after close evicts cache',
+    're-opened reference should be a fresh wrapper',
   )
 
   const fetched = await reopened.observation.getByDocId(obs.docId)
   assert.equal(fetched.docId, obs.docId)
 })
 
-// B1 — the architectural reason per-instance subchannel ids exist. After
-// close + re-open via getProject(id), the OLD wrapper reference and the
-// NEW one must live on different SubChannel ids, so a stale call posted
-// through the old wrapper cannot reach the freshly-opened project on the
-// server. Without per-instance ids, the stale call would land on the same
-// SubChannel as the new instance and silently succeed against it.
-test('server: stale call on old wrapper after re-open still rejects', async (t) => {
+// The architectural reason this PR exists. After close + re-open, a stale
+// call posted through the OLD wrapper must NOT silently land on the freshly
+// re-opened project — it must reject. (This is the failure mode the bug
+// report flagged: silent re-open, with the additional risk that a concurrent
+// `getProject(id)` could have re-opened the project between the close and
+// the late call.)
+test('After close + re-open, a stale call on the old reference still rejects', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
 
@@ -80,111 +79,99 @@ test('server: stale call on old wrapper after re-open still rejects', async (t) 
   await oldProject.$getProjectSettings()
   await oldProject.close()
 
-  // Re-open the project. Server mints a fresh instance id; the new wrapper
-  // is on a different SubChannel.
   const newProject = await client.getProject(projectId)
   await newProject.$getProjectSettings()
 
-  // Stale call on the OLD wrapper must reject — the server's tombstone
-  // stub for the old instance answers, even though a fresh instance is
-  // open at the same projectId.
   await assert.rejects(
     () => oldProject.$getProjectSettings(),
     /Project is closed/,
   )
 })
 
-// Concurrent `assertProjectExists` calls for the same project (e.g. two
-// `client.getProject(id)` calls from clients sharing a server) must
-// resolve to the SAME instance id — otherwise the server would mint two
-// SubChannels for one open project, and only the second would be
-// reachable for the project's actual `'close'` event teardown.
-test('server: concurrent assertProjectExists for same project dedupes to one instance', async (t) => {
+test('Two parallel getProject(id) calls return one wrapper and both work', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
 
-  // Drive two getProject(id) calls in the same tick. The client cache
-  // also dedupes them at the wrapper level, so to actually exercise the
-  // server-side dedupe we drive parallel `client.getProject(id)` calls
-  // from a freshly-cleared cache by closing the project first.
-  const project = await client.getProject(projectId)
-  await project.close()
+  // Drive parallel `getProject(id)` calls from a freshly-cleared cache by
+  // closing the project first, so both calls go all the way to the server.
+  await (await client.getProject(projectId)).close()
 
-  const [reopenedA, reopenedB] = await Promise.all([
+  const [a, b] = await Promise.all([
     client.getProject(projectId),
     client.getProject(projectId),
   ])
 
-  // Same wrapper from the client cache.
-  assert.equal(reopenedA, reopenedB)
-
-  // Both should point at a working project (would fail if two server
-  // instances were minted and one of them ended up unreachable).
-  await reopenedA.$getProjectSettings()
-  await reopenedB.$getProjectSettings()
+  assert.equal(a, b, 'both callers should resolve to the same wrapper')
+  await a.$getProjectSettings()
+  await b.$getProjectSettings()
 })
 
-test('client: getProject after close returns a fresh reference (cache eviction)', async (t) => {
+test('Closing one project does not affect another open project', async (t) => {
+  const { client } = setup(t)
+  const projectIdA = await client.createProject({ name: 'mapeo-a' })
+  const projectIdB = await client.createProject({ name: 'mapeo-b' })
+
+  const projectA = await client.getProject(projectIdA)
+  const projectB = await client.getProject(projectIdB)
+
+  await projectA.$getProjectSettings()
+  await projectB.$getProjectSettings()
+
+  await projectA.close()
+
+  // A is closed; B is unaffected.
+  await assert.rejects(
+    () => projectA.$getProjectSettings(),
+    /Project is closed/,
+  )
+  const settingsB = await projectB.$getProjectSettings()
+  assert.equal(settingsB.name, 'mapeo-b')
+})
+
+test('When the server closes the project, client calls on the wrapper reject', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
+
+  // Close the project from the server side, bypassing the client. The
+  // wrapper has no idea this happened until it tries a method call.
+  const serverProject = await serverManager.getProject(projectId)
+  await serverProject.close()
+
+  await assert.rejects(() => project.$getProjectSettings(), /Project is closed/)
+})
+
+test('A method call posted before close completes still resolves', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
-
   const project = await client.getProject(projectId)
+
+  // Fire the method without awaiting it, then close. The method's request
+  // is posted to the server before the close request, so it should be
+  // processed against the still-open project and resolve normally.
+  const inFlight = project.$getProjectSettings()
   await project.close()
 
-  const reopened = await client.getProject(projectId)
-  assert.notEqual(reopened, project)
-
-  // Drive a method call so the re-opened project is fully initialized
-  // before the test tears down.
-  await reopened.$getProjectSettings()
+  const settings = await inFlight
+  assert.equal(settings.name, 'mapeo')
 })
 
-test('client: failed assertProjectExists evicts cache so retry can succeed', async (t) => {
+test('After a failed getProject, a subsequent getProject for a real project succeeds', async (t) => {
   const { client } = setup(t)
 
-  // First call fails because the project does not exist.
-  await assert.rejects(() => client.getProject('does-not-exist'))
+  // Different ids: first fails (project does not exist), then a real
+  // project is created and getProject(realId) must succeed. Without the
+  // cache-poisoning fix, a rejected entry could linger and break unrelated
+  // ids; with it, only the failed id's entry is evicted.
+  await assert.rejects(() => client.getProject('does-not-exist'), /not found/i)
 
-  // Now create a project with a known id and confirm a subsequent
-  // getProject(id) for that id is not poisoned by the earlier failure for a
-  // different id. Also retry the failing id — the cache should be evicted so
-  // the retry hits the server again rather than returning the same rejected
-  // promise instantly.
-  await assert.rejects(() => client.getProject('does-not-exist'))
-})
+  const realId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(realId)
+  await project.$getProjectSettings()
 
-// The throwing-proxy stub used on the server side is the contract: any
-// property at any depth must resolve to a callable, and applying that
-// callable must throw the supplied error. Validate the shape directly so we
-// don't need to rely on the integration path to exercise edge cases.
-test('throwing-proxy stub: nested access + apply throws supplied error', async () => {
-  /** @type {ProxyHandler<any>} */
-  const handler = {
-    get() {
-      return new Proxy(function () {}, handler)
-    },
-    has() {
-      return true
-    },
-    apply() {
-      throw new Error('Project is closed')
-    },
-  }
-  // Outer target is `{}` so that `typeof === 'object'` (rpc-reflector
-  // requires this for handler objects).
-  const stub = new Proxy({}, handler)
-
-  assert.equal(typeof stub, 'object')
-
-  // Reflect.has must return true at any depth so rpc-reflector's
-  // applyNestedMethod walks through.
-  assert.equal(Reflect.has(stub, 'observation'), true)
-  assert.equal(Reflect.has(stub.observation, 'create'), true)
-
-  // Nested access returns a callable that throws when invoked. (The outer
-  // proxy itself is not callable — only nested function-target proxies are.
-  // rpc-reflector never invokes the handler directly, only its methods.)
-  assert.throws(() => stub.foo(), /Project is closed/)
-  assert.throws(() => stub.foo.bar(), /Project is closed/)
-  assert.throws(() => stub.foo.bar.baz(1, 2, 3), /Project is closed/)
+  // And a retry of the original failing id still rejects (project still
+  // doesn't exist) — proving the failure path itself is also retried, not
+  // returned from a poisoned cache.
+  await assert.rejects(() => client.getProject('does-not-exist'), /not found/i)
 })
