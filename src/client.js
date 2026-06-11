@@ -35,19 +35,15 @@ export function createMapeoClient(messagePort, opts = {}) {
   const projectClientPromises = new Map()
 
   /**
-   * Registry of every per-project rpc-reflector client + SubChannel pair
-   * we've created. Parallel to `projectClientPromises`: when a project is
-   * individually closed, its cache entry is evicted so a subsequent
-   * `getProject(id)` returns a fresh wrapper, but the inner client and
-   * channel stay alive so the server's "Project is closed" stub can still
-   * answer post-close method calls on the old wrapped reference.
-   * `closeMapeoClient` iterates this set for cleanup.
+   * The rpc-reflector client + SubChannel pair for every currently-open
+   * project. Entries are removed when the project's wrapped `close()`
+   * settles; `closeMapeoClient` sweeps whatever is left.
    * @type {Set<{
    *   client: import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>,
    *   channel: SubChannel,
    * }>}
    */
-  const allProjectClients = new Set()
+  const openProjectClients = new Set()
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
   const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
@@ -68,21 +64,24 @@ export function createMapeoClient(messagePort, opts = {}) {
           createClient.close(managerClient)
 
           // Wait for any in-flight project creations to settle before
-          // closing project clients. `allProjectClients` is populated
+          // closing project clients. `openProjectClients` is populated
           // synchronously after `assertProjectExists` resolves, so any
           // creation that hasn't settled yet isn't in the registry.
           await Promise.allSettled(projectClientPromises.values())
 
-          for (const entry of allProjectClients) {
+          for (const entry of openProjectClients) {
             createClient.close(entry.client)
             entry.channel.close()
           }
-          allProjectClients.clear()
-          // Note: `projectClientPromises` is intentionally NOT cleared.
-          // Existing behaviour (verified by the "Client calls fail after
-          // server closes" test) is that `getProject(id)` after manager
-          // close returns the cached wrapper rather than retrying — any
-          // subsequent method call rejects via the closed channel.
+          openProjectClients.clear()
+          // `projectClientPromises` is intentionally NOT cleared: a
+          // `getProject(id)` after close returns the cached wrapper, whose
+          // method calls reject with "Channel closed".
+
+          // Closed last so in-flight `assertProjectExists` calls awaited
+          // above can complete rather than reject.
+          mapeoRpcChannel.close()
+          createClient.close(mapeoRpcClient)
         }
       }
 
@@ -140,25 +139,33 @@ export function createMapeoClient(messagePort, opts = {}) {
     const projectClient = createClient(projectChannel, opts)
     projectChannel.start()
 
-    allProjectClients.add({ client: projectClient, channel: projectChannel })
+    const registryEntry = { client: projectClient, channel: projectChannel }
+    openProjectClients.add(registryEntry)
 
-    // Wrap projectClient to intercept `close` so the cache entry is evicted
-    // once the wire close resolves. After eviction, `getProject(id)` returns
-    // a fresh wrapper. The inner client and channel are NOT closed here —
-    // they stay alive (until `closeMapeoClient`) so the server's tombstone
-    // stub can still answer any post-close method calls posted via this
-    // wrapper, surfacing a clean "Project is closed" rejection instead of
-    // an rpc-reflector timeout. All other property accesses delegate to
-    // the inner client unchanged.
+    // Wrap projectClient to intercept `close`: after the wire close settles,
+    // tear down the local client + channel — rejecting any in-flight calls —
+    // and evict the cache entry so a subsequent `getProject(id)` re-opens.
+    // Further method calls on this wrapper reject with "Channel closed".
+    // The close promise is cached so repeated `close()` calls return the
+    // same result instead of failing on the already-closed channel. All
+    // other property accesses delegate to the inner client unchanged.
+    /** @type {Promise<void> | null} */
+    let closePromise = null
     const wrappedProjectClient = new Proxy(projectClient, {
       get(target, prop, receiver) {
         if (prop === 'close') {
-          return async () => {
-            try {
-              await target.close()
-            } finally {
-              projectClientPromises.delete(projectPublicId)
-            }
+          return () => {
+            closePromise ??= (async () => {
+              try {
+                await target.close()
+              } finally {
+                projectClientPromises.delete(projectPublicId)
+                openProjectClients.delete(registryEntry)
+                createClient.close(projectClient)
+                projectChannel.close()
+              }
+            })()
+            return closePromise
           }
         }
         return Reflect.get(target, prop, receiver)

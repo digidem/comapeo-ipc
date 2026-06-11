@@ -13,7 +13,20 @@ test('After close, methods on the closed reference reject', async (t) => {
 
   await project.close()
 
-  await assert.rejects(() => project.$getProjectSettings(), /Project is closed/)
+  await assert.rejects(() => project.$getProjectSettings(), /Channel closed/)
+})
+
+test('close() is idempotent — repeated calls resolve like the first', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  await Promise.all([project.close(), project.close()])
+  await project.close()
+
+  // And the project can still be re-opened afterwards.
+  const reopened = await client.getProject(projectId)
+  await reopened.$getProjectSettings()
 })
 
 test('After close, nested-namespace methods on the closed reference reject', async (t) => {
@@ -37,7 +50,7 @@ test('After close, nested-namespace methods on the closed reference reject', asy
         attachments: [],
         tags: {},
       }),
-    /Project is closed/,
+    /Channel closed/,
   )
 })
 
@@ -65,12 +78,12 @@ test('After close, observations created earlier are still readable via a re-open
   assert.equal(fetched.docId, obs.docId)
 })
 
-// The architectural reason this PR exists. After close + re-open, a stale
-// call posted through the OLD wrapper must NOT silently land on the freshly
-// re-opened project — it must reject. (This is the failure mode the bug
-// report flagged: silent re-open, with the additional risk that a concurrent
-// `getProject(id)` could have re-opened the project between the close and
-// the late call.)
+// The failure mode the bug report flagged: after close + re-open, a stale
+// call through the OLD reference must NOT silently land on the freshly
+// re-opened project — it must reject. The local teardown rejects it before
+// it reaches the wire; per-instance subchannel ids guarantee that even a
+// message that does reach the wire (e.g. posted while close is in flight)
+// cannot route to the new instance.
 test('After close + re-open, a stale call on the old reference still rejects', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
@@ -82,10 +95,7 @@ test('After close + re-open, a stale call on the old reference still rejects', a
   const newProject = await client.getProject(projectId)
   await newProject.$getProjectSettings()
 
-  await assert.rejects(
-    () => oldProject.$getProjectSettings(),
-    /Project is closed/,
-  )
+  await assert.rejects(() => oldProject.$getProjectSettings(), /Channel closed/)
 })
 
 test('Two parallel getProject(id) calls return one wrapper and both work', async (t) => {
@@ -120,10 +130,7 @@ test('Closing one project does not affect another open project', async (t) => {
   await projectA.close()
 
   // A is closed; B is unaffected.
-  await assert.rejects(
-    () => projectA.$getProjectSettings(),
-    /Project is closed/,
-  )
+  await assert.rejects(() => projectA.$getProjectSettings(), /Channel closed/)
   const settingsB = await projectB.$getProjectSettings()
   assert.equal(settingsB.name, 'mapeo-b')
 })
@@ -140,6 +147,13 @@ test('When the server closes the project, client calls on the wrapper reject', a
   await serverProject.close()
 
   await assert.rejects(() => project.$getProjectSettings(), /Project is closed/)
+
+  // Even after the project is re-opened on the server, calls from the old
+  // wrapper still reject: they route by the old (tombstoned) instance id,
+  // so they cannot reach the fresh instance.
+  const reopenedServerProject = await serverManager.getProject(projectId)
+  await assert.rejects(() => project.$getProjectSettings(), /Project is closed/)
+  await reopenedServerProject.close()
 })
 
 test('A method call posted before close completes still resolves', async (t) => {

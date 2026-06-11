@@ -69,7 +69,7 @@ test('After close, getProject(id) returns a fresh working project', async (t) =>
   // is no longer a usable handle.
   await assert.rejects(
     () => project.observation.getByDocId(obs.docId),
-    /Project is closed/,
+    /Channel closed/,
   )
 
   // But getProject(id) returns a fresh, fully-functional reference,
