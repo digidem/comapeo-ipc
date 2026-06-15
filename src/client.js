@@ -25,7 +25,7 @@ import {
 const CLOSE = Symbol('close')
 
 /**
- * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createClient>[1]} [opts]
  *
  * @returns {MapeoClientApi}
@@ -126,7 +126,7 @@ export async function closeMapeoClient(client) {
  * e.g. the different servers for maps, and in the future for serving blobs and
  * icons (once extracted from core)
  *
- * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createClient>[1]} [opts]
  * @return {AppRpcApi}
  */
