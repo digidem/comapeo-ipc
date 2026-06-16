@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { NotFoundError } from '@comapeo/core/errors.js'
 
 import { closeMapeoClient } from '../src/client.js'
 
@@ -126,9 +127,12 @@ test('Multiple projects and several calls in same tick', async (t) => {
 test('Attempting to get non-existent project fails', async (t) => {
   const { client } = setup(t)
 
-  await assert.rejects(async () => {
-    await client.getProject('mapeo')
-  })
+  await assert.rejects(
+    async () => {
+      await client.getProject('mapeo')
+    },
+    { code: NotFoundError.code },
+  )
 
   const results = await Promise.allSettled([
     client.getProject('mapeo'),

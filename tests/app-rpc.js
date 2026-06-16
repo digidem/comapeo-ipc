@@ -121,7 +121,10 @@ test('AppRpc client calls fail after server closes', async (t) => {
   server.close()
   closeAppRpcClient(client)
 
-  await assert.rejects(() => client.mapServer.listen({ localPort: 6001 }))
+  await assert.rejects(
+    () => client.mapServer.listen({ localPort: 6001 }),
+    /Channel closed/,
+  )
 
   t.after(() => {
     port1.close()

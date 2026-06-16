@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { NotFoundError } from '@comapeo/core/errors.js'
 
 import { setup } from './helpers.js'
+import { ProjectClosedError } from '../src/errors.js'
 
 test('After close, methods on the closed reference reject', async (t) => {
   const { client } = setup(t)
@@ -146,13 +148,17 @@ test('When the server closes the project, client calls on the wrapper reject', a
   const serverProject = await serverManager.getProject(projectId)
   await serverProject.close()
 
-  await assert.rejects(() => project.$getProjectSettings(), /Project is closed/)
+  await assert.rejects(() => project.$getProjectSettings(), {
+    code: ProjectClosedError.code,
+  })
 
   // Even after the project is re-opened on the server, calls from the old
   // wrapper still reject: they route by the old (tombstoned) instance id,
   // so they cannot reach the fresh instance.
   const reopenedServerProject = await serverManager.getProject(projectId)
-  await assert.rejects(() => project.$getProjectSettings(), /Project is closed/)
+  await assert.rejects(() => project.$getProjectSettings(), {
+    code: ProjectClosedError.code,
+  })
   await reopenedServerProject.close()
 })
 
@@ -229,7 +235,9 @@ test('After a failed getProject, a subsequent getProject for a real project succ
   // project is created and getProject(realId) must succeed. Without the
   // cache-poisoning fix, a rejected entry could linger and break unrelated
   // ids; with it, only the failed id's entry is evicted.
-  await assert.rejects(() => client.getProject('does-not-exist'), /not found/i)
+  await assert.rejects(() => client.getProject('does-not-exist'), {
+    code: NotFoundError.code,
+  })
 
   const realId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(realId)
@@ -238,5 +246,7 @@ test('After a failed getProject, a subsequent getProject for a real project succ
   // And a retry of the original failing id still rejects (project still
   // doesn't exist) — proving the failure path itself is also retried, not
   // returned from a poisoned cache.
-  await assert.rejects(() => client.getProject('does-not-exist'), /not found/i)
+  await assert.rejects(() => client.getProject('does-not-exist'), {
+    code: NotFoundError.code,
+  })
 })

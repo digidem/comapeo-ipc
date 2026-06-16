@@ -6,6 +6,7 @@ import {
   SubChannel,
 } from './lib/sub-channel.js'
 import { isRelevantEventData } from './lib/utils.js'
+import { ProjectClosedError } from './errors.js'
 
 /**
  * @param {import('@comapeo/core').MapeoManager} manager
@@ -179,7 +180,7 @@ export function createMapeoServer(manager, messagePort, opts) {
 }
 
 function createClosedProjectStub() {
-  return createThrowingProxy(() => new Error('Project is closed'))
+  return createThrowingProxy(() => new ProjectClosedError())
 }
 
 /**
