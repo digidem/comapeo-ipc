@@ -14,9 +14,9 @@ on:
           - minor
           - major
           - prerelease
-          # - prepatch
-          # - preminor
-          # - premajor
+          - prepatch
+          - preminor
+          - premajor
   pull_request:
     types: [closed]
     branches: [main]
@@ -37,10 +37,10 @@ jobs:
           sync-semver-tags: false
           access: 'public'
           # This prefix is added before the prerelease number, e.g. `v3.0.0-next.0`
-          # prerelease-prefix: 'alpha'
+          prerelease-prefix: 'pre'
           semver: ${{ github.event.inputs.semver }}
-          # Prereleases are published under the `alpha` npm dist-tag
-          # npm-tag: ${{ startsWith(github.event.inputs.semver, 'pre') && 'alpha' || 'latest' }}
+          # Prereleases are published under the `pre` npm dist-tag
+          npm-tag: ${{ startsWith(github.event.inputs.semver, 'pre') && 'pre' || 'latest' }}
           # Don't notify linked issues
           notify-linked-issues: false
           publish-mode: oidc
