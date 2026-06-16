@@ -176,6 +176,7 @@ export function createMapeoServer(manager, messagePort, opts) {
     // Unknown instance id — silently drop. Could happen for a malformed
     // message or a stale message from a prior `comapeo-ipc` session sharing
     // the same messagePort.
+    console.error(`Dropping message for unknown instance id ${id}`)
   }
 }
 
