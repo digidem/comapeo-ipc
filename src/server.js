@@ -180,22 +180,16 @@ export function createMapeoServer(manager, messagePort, opts) {
   }
 }
 
-function createClosedProjectStub() {
-  return createThrowingProxy(() => new ProjectClosedError())
-}
-
 /**
- * Build a Proxy that responds truthfully to property/has checks at any depth
- * and throws `makeError()` when applied as a function. The outer target is a
- * plain object so the proxy passes rpc-reflector's `typeof handler ===
- * 'object'` invariant (the outer is intentionally non-callable — only nested
- * function-target proxies returned from `get` are invoked). Nested accesses
- * return a function-target proxy so that `applyNestedMethod` finds
+ * Build a Proxy bound as a stub rpc-reflector handler for a closed project
+ * instance: it answers property/`has` checks at any depth and throws
+ * `ProjectClosedError` when a method is applied (rpc-reflector catches and
+ * serializes it back to the client). The outer target is a plain object so the
+ * proxy passes rpc-reflector's `typeof handler === 'object'` invariant; nested
+ * accesses return a function-target proxy so `applyNestedMethod` finds
  * `typeof === 'function'` and triggers the apply trap.
- *
- * @param {() => Error} makeError
  */
-function createThrowingProxy(makeError) {
+function createClosedProjectStub() {
   /** @type {ProxyHandler<any>} */
   const handler = {
     get() {
@@ -205,7 +199,7 @@ function createThrowingProxy(makeError) {
       return true
     },
     apply() {
-      throw makeError()
+      throw new ProjectClosedError()
     },
   }
   return new Proxy({}, handler)

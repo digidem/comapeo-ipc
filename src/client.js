@@ -7,6 +7,55 @@ import {
   MAPEO_RPC_ID,
   SubChannel,
 } from './lib/sub-channel.js'
+import { ClientClosedError, ProjectClosedError } from './errors.js'
+
+// rpc-reflector dispatches these EventEmitter methods locally and
+// synchronously (they return the client/an array/a number, never a promise).
+// Mirrors the method set rpc-reflector treats specially (`prop in
+// EventEmitter.prototype`).
+const EMITTER_METHODS = new Set([
+  'addListener',
+  'on',
+  'once',
+  'removeListener',
+  'off',
+  'removeAllListeners',
+  'emit',
+  'eventNames',
+  'listeners',
+  'listenerCount',
+])
+
+/**
+ * Build the Proxy returned for a closed client/project reference. Method calls
+ * (including nested namespaces such as `project.observation.*`) reject with
+ * `makeError()`, keeping the `Promise`-returning contract callers expect.
+ * EventEmitter methods are the exception: callers don't await them, so a
+ * rejected promise would surface as an unhandled rejection — they throw
+ * synchronously instead, at the call site.
+ *
+ * @param {() => Error} makeError
+ */
+function createClosedProxy(makeError) {
+  /** @type {ProxyHandler<any>} */
+  const handler = {
+    get(_target, prop) {
+      if (typeof prop === 'string' && EMITTER_METHODS.has(prop)) {
+        return () => {
+          throw makeError()
+        }
+      }
+      return new Proxy(function () {}, handler)
+    },
+    has() {
+      return true
+    },
+    apply() {
+      return Promise.reject(makeError())
+    },
+  }
+  return new Proxy({}, handler)
+}
 
 /**
  * @typedef {import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>} MapeoProjectApi
@@ -56,6 +105,12 @@ export function createMapeoClient(messagePort, opts = {}) {
   mapeoRpcChannel.start()
   managerChannel.start()
 
+  // Set once `closeMapeoClient` has torn the whole client down. Read by the
+  // manager proxy and the per-project wrappers so that calls after close
+  // surface `ManagerClosedError` instead of rpc-reflector's `ChannelClosed`.
+  let clientClosed = false
+  const managerClosedProxy = createClosedProxy(() => new ClientClosedError())
+
   const client = new Proxy(managerClient, {
     get(target, prop, receiver) {
       if (prop === CLOSE) {
@@ -76,17 +131,25 @@ export function createMapeoClient(messagePort, opts = {}) {
           openProjectClients.clear()
           // `projectClientPromises` is intentionally NOT cleared: a
           // `getProject(id)` after close returns the cached wrapper, whose
-          // method calls reject with "Channel closed".
+          // method calls reject with `ManagerClosedError`.
 
           // Closed last so in-flight `assertProjectExists` calls awaited
           // above can complete rather than reject.
           mapeoRpcChannel.close()
           createClient.close(mapeoRpcClient)
+
+          clientClosed = true
         }
       }
 
       if (prop === 'getProject') {
         return createProjectClient
+      }
+
+      // `then` must stay falsy so awaiting the client (a thenable check) does
+      // not route into the throwing proxy.
+      if (clientClosed && prop !== 'then') {
+        return Reflect.get(managerClosedProxy, prop)
       }
 
       return Reflect.get(target, prop, receiver)
@@ -104,6 +167,8 @@ export function createMapeoClient(messagePort, opts = {}) {
     const existingClientPromise = projectClientPromises.get(projectPublicId)
 
     if (existingClientPromise) return existingClientPromise
+
+    if (clientClosed) throw new ClientClosedError()
 
     /** @type {import('p-defer').DeferredPromise<import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>>} */
     const deferred = pDefer()
@@ -145,12 +210,21 @@ export function createMapeoClient(messagePort, opts = {}) {
     // Wrap projectClient to intercept `close`: after the wire close settles,
     // tear down the local client + channel — rejecting any in-flight calls —
     // and evict the cache entry so a subsequent `getProject(id)` re-opens.
-    // Further method calls on this wrapper reject with "Channel closed".
+    // Further method calls on this wrapper reject with `ProjectClosedError`.
     // The close promise is cached so repeated `close()` calls return the
     // same result instead of failing on the already-closed channel. All
     // other property accesses delegate to the inner client unchanged.
     /** @type {Promise<void> | null} */
     let closePromise = null
+    let closed = false
+    // After this reference is closed, any method (including nested namespaces)
+    // throws a descriptive error rather than rpc-reflector's `ChannelClosed`:
+    // `ProjectClosedError` when this project was closed, `ManagerClosedError`
+    // when the whole client was torn down. In-flight calls at close time are
+    // left to reject with `ChannelClosed` — they were already on the wire.
+    const closedProxy = createClosedProxy(() =>
+      closed ? new ProjectClosedError() : new ClientClosedError(),
+    )
     const wrappedProjectClient = new Proxy(projectClient, {
       get(target, prop, receiver) {
         if (prop === 'close') {
@@ -159,6 +233,7 @@ export function createMapeoClient(messagePort, opts = {}) {
               try {
                 await target.close()
               } finally {
+                closed = true
                 projectClientPromises.delete(projectPublicId)
                 openProjectClients.delete(registryEntry)
                 createClient.close(projectClient)
@@ -167,6 +242,9 @@ export function createMapeoClient(messagePort, opts = {}) {
             })()
             return closePromise
           }
+        }
+        if ((closed || clientClosed) && prop !== 'then') {
+          return Reflect.get(closedProxy, prop)
         }
         return Reflect.get(target, prop, receiver)
       },

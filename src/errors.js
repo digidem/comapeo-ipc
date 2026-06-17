@@ -15,3 +15,13 @@ export const ProjectClosedError = createErrorClass({
   message: 'Project is closed',
   status: 410,
 })
+
+/**
+ * Thrown client-side when a method is called after the MapeoManager client
+ * (the whole IPC client) has been closed via `closeMapeoClient`.
+ */
+export const ClientClosedError = createErrorClass({
+  code: 'CLIENT_CLOSED',
+  message: 'CoMapeo client is closed',
+  status: 410,
+})

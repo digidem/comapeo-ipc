@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { NotFoundError } from '@comapeo/core/errors.js'
 
 import { setup } from './helpers.js'
-import { ProjectClosedError, RpcChannelClosedError } from '../src/errors.js'
+import { ProjectClosedError } from '../src/errors.js'
 
 test('After close, methods on the closed reference reject', async (t) => {
   const { client } = setup(t)
@@ -16,7 +16,7 @@ test('After close, methods on the closed reference reject', async (t) => {
   await project.close()
 
   await assert.rejects(() => project.$getProjectSettings(), {
-    code: RpcChannelClosedError.code,
+    code: ProjectClosedError.code,
   })
 })
 
@@ -54,7 +54,7 @@ test('After close, nested-namespace methods on the closed reference reject', asy
         attachments: [],
         tags: {},
       }),
-    { code: RpcChannelClosedError.code },
+    { code: ProjectClosedError.code },
   )
 })
 
@@ -100,7 +100,7 @@ test('After close + re-open, a stale call on the old reference still rejects', a
   await newProject.$getProjectSettings()
 
   await assert.rejects(() => oldProject.$getProjectSettings(), {
-    code: RpcChannelClosedError.code,
+    code: ProjectClosedError.code,
   })
 })
 
@@ -137,7 +137,7 @@ test('Closing one project does not affect another open project', async (t) => {
 
   // A is closed; B is unaffected.
   await assert.rejects(() => projectA.$getProjectSettings(), {
-    code: RpcChannelClosedError.code,
+    code: ProjectClosedError.code,
   })
   const settingsB = await projectB.$getProjectSettings()
   assert.equal(settingsB.name, 'mapeo-b')

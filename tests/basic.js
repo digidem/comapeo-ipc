@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { NotFoundError } from '@comapeo/core/errors.js'
 
-import { RpcChannelClosedError } from '../src/errors.js'
+import { ClientClosedError, ProjectClosedError } from '../src/errors.js'
 import { closeMapeoClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
@@ -70,7 +70,7 @@ test('After close, getProject(id) returns a fresh working project', async (t) =>
   // Methods on the closed reference must reject — the original `project`
   // is no longer a usable handle.
   await assert.rejects(() => project.observation.getByDocId(obs.docId), {
-    code: RpcChannelClosedError.code,
+    code: ProjectClosedError.code,
   })
 
   // But getProject(id) returns a fresh, fully-functional reference,
@@ -189,6 +189,12 @@ test('Client calls fail after server closes', async (t) => {
       'rejected',
       // @ts-ignore
       result.reason,
+    )
+    assert.equal(
+      // @ts-ignore
+      result.reason.code,
+      ClientClosedError.code,
+      'after the client is closed, calls reject with ManagerClosedError',
     )
   }
 })
