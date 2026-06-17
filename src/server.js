@@ -233,8 +233,7 @@ export class MapeoRpcApi {
 /**
  * @typedef {object} RpcApi
  * @property {object} mapServer
- * @property {(options?: { localPort?: number, remotePort?: number }) => Promise<{ localPort: number, remotePort: number }>} mapServer.listen
- * @property {() => Promise<void>} mapServer.close
+ * @property {() => Promise<string>} mapServer.getBaseUrl Return the base URL of the map server
  */
 
 /**
