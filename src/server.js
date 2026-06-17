@@ -120,22 +120,17 @@ export class MapeoRpcApi {
 }
 
 /**
- * @typedef {object} RpcApi
- * @property {object} mapServer
- * @property {(options?: { localPort?: number, remotePort?: number }) => Promise<{ localPort: number, remotePort: number }>} mapServer.listen
- * @property {() => Promise<void>} mapServer.close
- */
-
-/**
- * RPC messages that are not part of core, e.g. the different servers for maps,
- * and in the future for serving blobs and icons (once extracted from core)
- * @param {RpcApi} rpc
+ * Generic RPC channel for app-specific needs, such as managing the map server.
+ * The RPC shape is defined by the app.
+ *
+ * @template {Record<string, any>} T
+ * @param {T} appRpcApi
  * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
-export function createAppRpcServer(rpc, messagePort, opts) {
+export function createAppRpcServer(appRpcApi, messagePort, opts) {
   const appRpcChannel = new SubChannel(messagePort, APP_RPC_ID)
-  const appRpcServer = createServer(rpc, appRpcChannel, opts)
+  const appRpcServer = createServer(appRpcApi, appRpcChannel, opts)
   appRpcChannel.start()
   return {
     close() {

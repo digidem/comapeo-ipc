@@ -8,4 +8,7 @@ export { createMapeoServer, createAppRpcServer } from './server.js'
 
 /** @typedef {import('./client.js').MapeoClientApi} MapeoClientApi */
 /** @typedef {import('./client.js').MapeoProjectApi} MapeoProjectApi */
-/** @typedef {import('./client.js').AppRpcApi} AppRpcApi */
+/**
+ * @template [T=unknown]
+ * @typedef {import('./client.js').AppRpcClientApi<T>} AppRpcClientApi
+ */

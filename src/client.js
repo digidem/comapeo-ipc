@@ -13,6 +13,24 @@ import {
  */
 
 /**
+ * Phantom brand so an app RPC client can't be confused with a raw rpc-reflector
+ * client (e.g. when passed to `closeAppRpcClient`).
+ *
+ * @template Tag
+ * @typedef {{ readonly [K in `__appRpc_${Tag & string}`]: void }} Brand
+ */
+
+/**
+ * Client-side type for an app RPC api. `T` is the api shape defined by the
+ * consuming app (the same object passed to `createAppRpcServer`): each method
+ * becomes async and nested namespaces are preserved. Defaults to `unknown` so
+ * that an un-annotated client is a type error rather than silently untyped.
+ *
+ * @template [T=unknown]
+ * @typedef {import('rpc-reflector/client.js').ClientApi<T & {}> & Brand<'AppRpcApi'>} AppRpcClientApi
+ */
+
+/**
  * @typedef {import('rpc-reflector/client.js').ClientApi<
  *   Omit<
  *     import('@comapeo/core').MapeoManager,
@@ -118,31 +136,27 @@ export async function closeMapeoClient(client) {
 }
 
 /**
- * @typedef {import('rpc-reflector/client.js').ClientApi<import('./server.js').RpcApi>} AppRpcApi
- */
-
-/**
  * Create an rpc client for application RPC messages that are not part of core,
  * e.g. the different servers for maps, and in the future for serving blobs and
  * icons (once extracted from core)
  *
+ * @template [T=unknown]
  * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createClient>[1]} [opts]
- * @return {AppRpcApi}
+ * @return {AppRpcClientApi<T>}
  */
 export function createAppRpcClient(messagePort, opts = {}) {
   const appRpcChannel = new SubChannel(messagePort, APP_RPC_ID)
-  const appRpcClient = /** @type {AppRpcApi} */ (
-    createClient(appRpcChannel, opts)
-  )
+  const appRpcClient = createClient(appRpcChannel, opts)
   appRpcChannel.start()
-  return appRpcClient
+  // TS can't know the type of the client, so we cast it in the function return
+  return /** @type {AppRpcClientApi<T>} */ (appRpcClient)
 }
 
 /**
  * Close the app RPC client (removes listeners but does not close the message port)
  *
- * @param {AppRpcApi} appRpcClient client created with `createAppRpcClient`
+ * @param {AppRpcClientApi} appRpcClient client created with `createAppRpcClient`
  */
 export function closeAppRpcClient(appRpcClient) {
   createClient.close(appRpcClient)

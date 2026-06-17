@@ -5,15 +5,21 @@ import { createAppRpcClient, closeAppRpcClient } from '../src/client.js'
 import { createAppRpcServer } from '../src/server.js'
 
 /**
+ * Wire up a server and client over a fresh channel for an app-defined api. The
+ * app RPC channel is generic: the consuming app decides the shape of the api,
+ * so the tests below exercise both flat and nested shapes.
+ *
+ * @template {Record<string, any>} T
  * @param {import('node:test').TestContext} t
- * @param {import('../src/server.js').RpcApi} [rpcApi]
+ * @param {T} api
  */
-function setup(t, rpcApi) {
+function setup(t, api) {
   const { port1, port2 } = new MessageChannel()
 
-  const api = rpcApi || createMockRpcApi()
   const server = createAppRpcServer(api, port1)
-  const client = createAppRpcClient(port2)
+  const client = /** @type {import('../src/client.js').AppRpcClientApi<T>} */ (
+    createAppRpcClient(port2)
+  )
 
   port1.start()
   port2.start()
@@ -28,189 +34,130 @@ function setup(t, rpcApi) {
   return { server, client, api }
 }
 
-/** @returns {import('../src/server.js').RpcApi} */
-function createMockRpcApi() {
+function createFlatApi() {
   return {
-    mapServer: {
-      async listen(options) {
-        const localPort = options?.localPort || 3000
-        return { localPort, remotePort: 3001 }
-      },
-      async close() {},
+    async ping() {
+      return 'pong'
+    },
+    /**
+     * @param {number} a
+     * @param {number} b
+     */
+    async add(a, b) {
+      return a + b
     },
   }
 }
 
-test('AppRpc client can call server method and get result', async (t) => {
-  const { client } = setup(t)
+function createNestedApi() {
+  return {
+    mapServer: {
+      /** @param {{ localPort?: number }} [options] */
+      async listen(options) {
+        return { localPort: options?.localPort || 3000, remotePort: 3001 }
+      },
+      async close() {},
+    },
+    blobServer: {
+      /** @param {string} blobId */
+      async getUrl(blobId) {
+        return `http://localhost:3002/${blobId}`
+      },
+    },
+  }
+}
 
-  const result = await client.mapServer.listen({ localPort: 4000 })
+test('AppRpc relays calls to a flat app-defined api', async (t) => {
+  const { client } = setup(t, createFlatApi())
 
-  assert.equal(result.localPort, 4000)
+  assert.equal(await client.ping(), 'pong')
+  assert.equal(await client.add(2, 3), 5)
 })
 
-test('AppRpc client can call multiple methods', async (t) => {
-  const { client } = setup(t)
+test('AppRpc relays calls to a nested app-defined api', async (t) => {
+  const { client } = setup(t, createNestedApi())
 
-  const listenResult = await client.mapServer.listen({ localPort: 5000 })
-  assert.equal(listenResult.localPort, 5000)
+  const listenResult = await client.mapServer.listen({ localPort: 4000 })
+  assert.equal(listenResult.localPort, 4000)
+  assert.equal(listenResult.remotePort, 3001)
+
+  assert.equal(
+    await client.blobServer.getUrl('abc'),
+    'http://localhost:3002/abc',
+  )
 
   await client.mapServer.close()
 })
 
-test('AppRpc concurrent calls resolve correctly', async (t) => {
+test('AppRpc resolves concurrent calls independently', async (t) => {
   let callCount = 0
 
-  /** @type {import('../src/server.js').RpcApi} */
-  const api = {
-    mapServer: {
-      async listen(options) {
-        callCount++
-        return { localPort: options?.localPort || 3000, remotePort: 3001 }
-      },
-      async close() {},
+  const { client } = setup(t, {
+    /** @param {number} n */
+    async double(n) {
+      callCount++
+      return n * 2
     },
-  }
-
-  const { client } = setup(t, api)
+  })
 
   const results = await Promise.all([
-    client.mapServer.listen({ localPort: 4001 }),
-    client.mapServer.listen({ localPort: 4002 }),
-    client.mapServer.listen({ localPort: 4003 }),
+    client.double(1),
+    client.double(2),
+    client.double(3),
   ])
 
   assert.equal(callCount, 3)
-  assert.equal(results[0].localPort, 4001)
-  assert.equal(results[1].localPort, 4002)
-  assert.equal(results[2].localPort, 4003)
+  assert.deepEqual(results, [2, 4, 6])
 })
 
-test('AppRpc server method errors are propagated to client', async (t) => {
-  /** @type {import('../src/server.js').RpcApi} */
-  const api = {
-    mapServer: {
-      async listen() {
-        throw new Error('Address already in use')
-      },
-      async close() {},
+test('AppRpc propagates server method errors to the client', async (t) => {
+  const { client } = setup(t, {
+    async fail() {
+      throw new Error('boom')
     },
-  }
-
-  const { client } = setup(t, api)
-
-  await assert.rejects(() => client.mapServer.listen({}), {
-    message: 'Address already in use',
   })
+
+  await assert.rejects(() => client.fail(), { message: 'boom' })
 })
 
-test('AppRpc client calls fail after server closes', async (t) => {
-  const { port1, port2 } = new MessageChannel()
+test('AppRpc client calls fail after the server closes', async (t) => {
+  const api = createFlatApi()
+  const { client, server } = setup(t, api)
 
-  const api = createMockRpcApi()
-  const server = createAppRpcServer(api, port1)
-  const client = createAppRpcClient(port2)
-
-  port1.start()
-  port2.start()
-
-  // Verify it works first
-  const result = await client.mapServer.listen({ localPort: 6000 })
-  assert.equal(result.localPort, 6000)
+  // Works before closing.
+  assert.equal(await client.ping(), 'pong')
 
   server.close()
   closeAppRpcClient(client)
 
-  await assert.rejects(() => client.mapServer.listen({ localPort: 6001 }))
-
-  t.after(() => {
-    port1.close()
-    port2.close()
-  })
+  await assert.rejects(() => client.ping())
 })
 
-test('AppRpc works with nested object API', async (t) => {
-  /** @type {import('../src/server.js').RpcApi} */
-  const api = {
-    mapServer: {
-      async listen(options) {
-        return { localPort: options?.localPort || 3000, remotePort: 3001 }
-      },
-      async close() {},
-    },
-  }
+test('AppRpc server close is idempotent', (t) => {
+  const { server } = setup(t, createFlatApi())
 
-  const { client } = setup(t, api)
-
-  const result = await client.mapServer.listen({ localPort: 7000 })
-  assert.equal(result.localPort, 7000)
-})
-
-test('AppRpc server close is idempotent', async (t) => {
-  const { port1, port2 } = new MessageChannel()
-
-  const api = createMockRpcApi()
-  const server = createAppRpcServer(api, port1)
-  const client = createAppRpcClient(port2)
-
-  port1.start()
-  port2.start()
-
-  // Closing server multiple times should not throw
+  // Closing more than once must not throw; t.after closes again too.
   server.close()
   server.close()
-
-  closeAppRpcClient(client)
-
-  t.after(() => {
-    port1.close()
-    port2.close()
-  })
 })
 
-test('AppRpc multiple independent clients on separate channels', async (t) => {
-  const { port1: serverPort1, port2: clientPort1 } = new MessageChannel()
-  const { port1: serverPort2, port2: clientPort2 } = new MessageChannel()
-
-  let callCount = 0
-  /** @type {import('../src/server.js').RpcApi} */
-  const api = {
-    mapServer: {
-      async listen(options) {
-        callCount++
-        return { localPort: options?.localPort || 3000, remotePort: 3001 }
-      },
-      async close() {},
+test('AppRpc isolates independent clients on separate channels', async (t) => {
+  const { client: client1 } = setup(t, {
+    async whoami() {
+      return 'one'
     },
-  }
-
-  const server1 = createAppRpcServer(api, serverPort1)
-  const server2 = createAppRpcServer(api, serverPort2)
-  const client1 = createAppRpcClient(clientPort1)
-  const client2 = createAppRpcClient(clientPort2)
-
-  serverPort1.start()
-  clientPort1.start()
-  serverPort2.start()
-  clientPort2.start()
+  })
+  const { client: client2 } = setup(t, {
+    async whoami() {
+      return 'two'
+    },
+  })
 
   const [result1, result2] = await Promise.all([
-    client1.mapServer.listen({ localPort: 8001 }),
-    client2.mapServer.listen({ localPort: 8002 }),
+    client1.whoami(),
+    client2.whoami(),
   ])
 
-  assert.equal(result1.localPort, 8001)
-  assert.equal(result2.localPort, 8002)
-  assert.equal(callCount, 2)
-
-  t.after(() => {
-    server1.close()
-    server2.close()
-    closeAppRpcClient(client1)
-    closeAppRpcClient(client2)
-    serverPort1.close()
-    clientPort1.close()
-    serverPort2.close()
-    clientPort2.close()
-  })
+  assert.equal(result1, 'one')
+  assert.equal(result2, 'two')
 })

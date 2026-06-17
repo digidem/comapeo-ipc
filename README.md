@@ -35,6 +35,20 @@ Returns a client instance that reflects the interface of the `manager` provided 
 
 Closes the IPC client instance. Does not close or destroy the `messagePort` provided to [`createMapeoClient`](#createmapeoclientmessageport-messageportlike-clientapimapeomanager).
 
+### `createAppRpcServer<T>(appRpcApi: T, messagePort: MessagePortLike): { close: () => void }`
+
+Creates an RPC server for application-specific needs that are not part of core, e.g. a map server (and in future blob and icon servers). Unlike the Mapeo server, the shape is generic: `appRpcApi` is any object of (possibly nested) async methods, and the consuming app decides that shape.
+
+Returns an object with a `close()` method. Does not close or destroy the `messagePort`.
+
+### `createAppRpcClient<T>(messagePort: MessagePortLike, opts?: { timeout?: number }): AppRpcClientApi<T>`
+
+Creates the matching client. `T` is the shape of the `appRpcApi` passed to `createAppRpcServer`. Because the shape can't be inferred from the `messagePort`, annotate the result with `AppRpcClientApi<T>` to type the client; without it `T` defaults to `unknown` and member access is a type error.
+
+### `closeAppRpcClient(appRpcClient: AppRpcClientApi): void`
+
+Closes the app RPC client. Does not close or destroy the `messagePort`.
+
 ## Usage
 
 In the server:
@@ -78,6 +92,30 @@ client.on('invite-received', (invite) => {
 
 // Close the client
 closeMapeoClient(client)
+```
+
+For app-specific RPC, the app defines the API shape on both sides:
+
+```ts
+import { createAppRpcServer, createAppRpcClient } from '@comapeo/ipc'
+
+type MapServerApi = {
+  mapServer: {
+    listen(options?: { localPort?: number }): Promise<{ localPort: number }>
+    close(): Promise<void>
+  }
+}
+
+// In the server, pass an implementation of that shape:
+const appRpcServer = createAppRpcServer<MapServerApi>(
+  { mapServer: { async listen(options) { ... }, async close() {} } },
+  messagePort,
+)
+
+// In the client, pass the same shape to type the client:
+const appRpcClient = createAppRpcClient<MapServerApi>(messagePort)
+
+const { localPort } = await appRpcClient.mapServer.listen({ localPort: 3000 })
 ```
 
 ## License
