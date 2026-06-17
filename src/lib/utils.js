@@ -1,15 +1,11 @@
 /**
- * @template T
- * @param {T} event
- * @returns {T extends { data: infer D } ? D : T}
+ * @param {unknown} data
+ * @returns {data is { id: string, message: unknown }}
  */
-export function extractMessageEventData(event) {
-  // In browser-like contexts, the actual payload will live in the `event.data` field
-  // https://developer.mozilla.org/en-US/docs/Web/API/MessagePort/message_event#event_properties
-  if (event && typeof event === 'object' && 'data' in event) {
-    return /** @type {any} */ (event.data)
-  }
+export function isRelevantEventData(data) {
+  if (!data || typeof data !== 'object') return false
+  if (!('id' in data && 'message' in data)) return false
+  if (typeof data.id !== 'string') return false
 
-  // In Node the event is the actual data that was sent
-  return /** @type {any} */ (event)
+  return true
 }

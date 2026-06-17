@@ -1,6 +1,5 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { MessageChannel } from 'node:worker_threads'
 
 import { createAppRpcClient, closeAppRpcClient } from '../src/client.js'
 import { createAppRpcServer } from '../src/server.js'

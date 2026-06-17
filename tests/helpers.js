@@ -1,4 +1,3 @@
-import { MessageChannel } from 'node:worker_threads'
 import { KeyManager } from '@mapeo/crypto'
 import { MapeoManager } from '@comapeo/core'
 import { createRequire } from 'node:module'

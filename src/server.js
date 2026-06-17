@@ -5,11 +5,11 @@ import {
   MAPEO_RPC_ID,
   SubChannel,
 } from './lib/sub-channel.js'
-import { extractMessageEventData } from './lib/utils.js'
+import { isRelevantEventData } from './lib/utils.js'
 
 /**
  * @param {import('@comapeo/core').MapeoManager} manager
- * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
 export function createMapeoServer(manager, messagePort, opts) {
@@ -57,14 +57,11 @@ export function createMapeoServer(manager, messagePort, opts) {
   }
 
   /**
-   * @param {unknown} payload
+   * @param {{ data: unknown }} payload
    */
-  async function handleMessage(payload) {
-    const data = extractMessageEventData(payload)
-
-    if (!data || typeof data !== 'object' || !('message' in data)) return
-
-    const id = 'id' in data && typeof data.id === 'string' ? data.id : null
+  async function handleMessage({ data }) {
+    if (!isRelevantEventData(data)) return
+    const { id } = data
 
     if (!id || id === MANAGER_CHANNEL_ID || id === MAPEO_RPC_ID) return
 
@@ -96,7 +93,7 @@ export function createMapeoServer(manager, messagePort, opts) {
 
     existingProjectServers.set(id, { close })
 
-    projectChannel.emit('message', data.message)
+    projectChannel.dispatchEvent({ data: data.message })
 
     projectChannel.start()
   }
@@ -133,7 +130,7 @@ export class MapeoRpcApi {
  * RPC messages that are not part of core, e.g. the different servers for maps,
  * and in the future for serving blobs and icons (once extracted from core)
  * @param {RpcApi} rpc
- * @param {import('./lib/sub-channel.js').MessagePortLike} messagePort
+ * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
 export function createAppRpcServer(rpc, messagePort, opts) {
