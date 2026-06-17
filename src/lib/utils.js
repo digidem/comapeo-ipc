@@ -1,6 +1,6 @@
 /**
  * @param {unknown} data
- * @returns {data is { id: string, message: any }}
+ * @returns {data is { id: string, message: unknown }}
  */
 export function isRelevantEventData(data) {
   if (!data || typeof data !== 'object') return false

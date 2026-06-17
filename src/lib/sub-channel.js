@@ -9,7 +9,7 @@ export const MANAGER_CHANNEL_ID = '@@manager'
 
 /**
  * @typedef {Object} Events
- * @property {(message: any) => void} message
+ * @property {(message: unknown) => void} message
  */
 
 /** @implements {MessagePortLike} */
@@ -18,7 +18,7 @@ export class SubChannel {
   #messagePort
   /** @type {'idle' | 'active' | 'closed'} */
   #state
-  /** @type {Array<{id: string, message: any}>} */
+  /** @type {Array<{id: string, message: unknown}>} */
   #queued
   #handleMessageEvent
 
@@ -99,7 +99,7 @@ export class SubChannel {
 
     this.#state = 'active'
 
-    /** @type {{id: string, message: any} | undefined} */
+    /** @type {{id: string, message: unknown} | undefined} */
     let data
     while ((data = this.#queued.shift())) {
       this.#handleMessageEvent({ data })
