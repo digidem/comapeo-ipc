@@ -19,11 +19,21 @@ on:
           - premajor
   pull_request:
     types: [closed]
-    branches: [main]
 
 jobs:
   release:
-    if: ${{github.event_name != 'pull_request' || github.event.pull_request.merged}}
+    # Run for the manual trigger, or when a release PR opened by the optic bot
+    # is closed. The action publishes on merge and deletes its draft release on
+    # close-without-merge. The bot-author + title checks make this a no-op for
+    # any other PR. Merges into non-main branches only release prereleases
+    # (branch like `release/vX.Y.Z-pre.N`); main releases anything.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.user.login == 'optic-release-automation[bot]'
+        && startsWith(github.event.pull_request.title, '[OPTIC-RELEASE-AUTOMATION]')
+        && (!github.event.pull_request.merged
+          || github.event.pull_request.base.ref == 'main'
+          || contains(github.event.pull_request.head.ref, '-pre.')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
