@@ -58,7 +58,7 @@
   "dependencies": {
     "custom-error-creator": "^1.4.0",
     "p-defer": "^4.0.1",
-    "rpc-reflector": "^4.0.0"
+    "rpc-reflector": "^4.1.0"
   },
   "peerDependencies": {
     "@comapeo/core": "^7.0.1"

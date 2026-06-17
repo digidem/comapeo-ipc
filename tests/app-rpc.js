@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import { createAppRpcClient, closeAppRpcClient } from '../src/client.js'
 import { createAppRpcServer } from '../src/server.js'
+import { RpcChannelClosedError } from '../src/errors.js'
 
 /**
  * @param {import('node:test').TestContext} t
@@ -121,10 +122,10 @@ test('AppRpc client calls fail after server closes', async (t) => {
   server.close()
   closeAppRpcClient(client)
 
-  await assert.rejects(
-    () => client.mapServer.listen({ localPort: 6001 }),
-    /Channel closed/,
-  )
+  await assert.rejects(() => client.mapServer.listen({ localPort: 6001 }), {
+    code: RpcChannelClosedError.code,
+    name: RpcChannelClosedError.name,
+  })
 
   t.after(() => {
     port1.close()
