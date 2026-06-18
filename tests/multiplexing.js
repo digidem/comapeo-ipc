@@ -14,6 +14,8 @@ import {
 
 import { FakeManager } from './fake-manager.js'
 
+/** @import { ComapeoServicesApi } from '../src/server.js' */
+
 const MOCK_BASE_URL = 'http://localhost:3000'
 
 // The whole reason this module exists on top of rpc-reflector: several logical
@@ -40,7 +42,7 @@ test('Core and services clients coexist on a single shared message port', async 
   const { port1, port2 } = new MessageChannel()
 
   const manager = new FakeManager()
-  /** @type {import('../src/server.js').ComapeoServicesApi} */
+  /** @type {ComapeoServicesApi} */
   const services = {
     mapServer: {
       async getBaseUrl() {
@@ -100,7 +102,7 @@ test('Closing one endpoint on a shared port leaves the other working', async (t)
   const { port1, port2 } = new MessageChannel()
 
   const manager = new FakeManager()
-  /** @type {import('../src/server.js').ComapeoServicesApi} */
+  /** @type {ComapeoServicesApi} */
   const services = {
     mapServer: {
       async getBaseUrl() {

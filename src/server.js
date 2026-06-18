@@ -10,9 +10,11 @@ import {
 import { isRelevantEventData } from './lib/utils.js'
 import { ProjectClosedError } from './errors.js'
 
+/** @import { MessagePortLike } from 'rpc-reflector' */
+
 /**
  * @param {import('@comapeo/core').MapeoManager} manager
- * @param {import('rpc-reflector').MessagePortLike} messagePort
+ * @param {MessagePortLike} messagePort
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
 export function createComapeoCoreServer(manager, messagePort, opts) {
@@ -284,7 +286,7 @@ export class ProjectRoutingApi {
  * the shared message port.
  *
  * @param {ComapeoServicesApi} services
- * @param {import('rpc-reflector').MessagePortLike} messagePort
+ * @param {MessagePortLike} messagePort
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
 export function createComapeoServicesServer(services, messagePort, opts) {

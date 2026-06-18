@@ -9,6 +9,10 @@ import {
 } from './lib/sub-channel.js'
 import { ClientClosedError, ProjectClosedError } from './errors.js'
 
+/** @import { ClientApi, MessagePortLike } from 'rpc-reflector' */
+/** @import { MapeoProject, MapeoManager } from '@comapeo/core' */
+/** @import { ComapeoServicesApi } from './server.js' */
+
 // rpc-reflector dispatches these EventEmitter methods locally and
 // synchronously (they return the client/an array/a number, never a promise).
 // Mirrors the method set rpc-reflector treats specially (`prop in
@@ -58,13 +62,13 @@ function createClosedProxy(makeError) {
 }
 
 /**
- * @typedef {import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>} ComapeoProjectClientApi
+ * @typedef {ClientApi<MapeoProject>} ComapeoProjectClientApi
  */
 
 /**
- * @typedef {import('rpc-reflector/client.js').ClientApi<
+ * @typedef {ClientApi<
  *   Omit<
- *     import('@comapeo/core').MapeoManager,
+ *     MapeoManager,
  *     'getProject'
  *   > & {
  *     getProject: (projectPublicId: string) => Promise<ComapeoProjectClientApi>
@@ -74,13 +78,13 @@ function createClosedProxy(makeError) {
 const CLOSE = Symbol('close')
 
 /**
- * @param {import('rpc-reflector').MessagePortLike} messagePort
+ * @param {MessagePortLike} messagePort
  * @param {Parameters<typeof createClient>[1]} [opts]
  *
  * @returns {ComapeoCoreClientApi}
  */
 export function createComapeoCoreClient(messagePort, opts = {}) {
-  /** @type {Map<string, Promise<import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>>>} */
+  /** @type {Map<string, Promise<ClientApi<MapeoProject>>>} */
   const projectClientPromises = new Map()
 
   /**
@@ -88,7 +92,7 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
    * project. Entries are removed when the project's wrapped `close()`
    * settles; `closeComapeoCoreClient` sweeps whatever is left.
    * @type {Set<{
-   *   client: import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>,
+   *   client: ClientApi<MapeoProject>,
    *   channel: SubChannel,
    * }>}
    */
@@ -97,9 +101,9 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
   const projectRoutingChannel = new SubChannel(messagePort, PROJECT_ROUTING_ID)
 
-  /** @type {import('rpc-reflector').ClientApi<import('@comapeo/core').MapeoManager>} */
+  /** @type {ClientApi<MapeoManager>} */
   const managerClient = createClient(managerChannel, opts)
-  /** @type {import('rpc-reflector').ClientApi<import('./server.js').ProjectRoutingApi>} */
+  /** @type {ClientApi<import('./server.js').ProjectRoutingApi>} */
   const projectRoutingClient = createClient(projectRoutingChannel, opts)
 
   projectRoutingChannel.start()
@@ -172,7 +176,7 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
 
     if (existingClientPromise) return existingClientPromise
 
-    /** @type {import('p-defer').DeferredPromise<import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>>} */
+    /** @type {import('p-defer').DeferredPromise<ClientApi<MapeoProject>>} */
     const deferred = pDefer()
 
     projectClientPromises.set(projectPublicId, deferred.promise)
@@ -203,7 +207,7 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     // wrapper uses a fresh SubChannel that can't collide with the old one.
     const projectChannel = new SubChannel(messagePort, instanceId)
 
-    /** @type {import('rpc-reflector').ClientApi<import('@comapeo/core').MapeoProject>} */
+    /** @type {ClientApi<MapeoProject>} */
     const projectClient = createClient(projectChannel, opts)
     projectChannel.start()
 
@@ -267,16 +271,16 @@ export async function closeComapeoCoreClient(client) {
 }
 
 /**
- * @typedef {import('rpc-reflector/client.js').ClientApi<import('./server.js').ComapeoServicesApi>} ComapeoServicesClientApi
+ * @typedef {ClientApi<ComapeoServicesApi>} ComapeoServicesClientApi
  */
 
 /**
  * Create a client for the app-provided services that live outside
  * `@comapeo/core` — the map server today, and the blob and icon servers in the
  * future (once extracted from core). The host app implements the server side;
- * see {@link import('./server.js').ComapeoServicesApi}.
+ * see {@link ComapeoServicesApi}.
  *
- * @param {import('rpc-reflector').MessagePortLike} messagePort
+ * @param {MessagePortLike} messagePort
  * @param {Parameters<typeof createClient>[1]} [opts]
  * @return {ComapeoServicesClientApi}
  */
