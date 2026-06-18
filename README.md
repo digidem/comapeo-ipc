@@ -43,7 +43,7 @@ Error classes are available from the `@comapeo/ipc/errors.js` entrypoint:
 ```ts
 import {
   ProjectClosedError,
-  ManagerClosedError,
+  ClientClosedError,
   RpcChannelClosedError,
   RpcTimeoutError,
 } from '@comapeo/ipc/errors.js'
@@ -52,7 +52,7 @@ import {
 After a reference is closed, calls made on it reject with a descriptive error:
 
 - **`ProjectClosedError`** (`code: 'PROJECT_CLOSED'`) — a method (including nested namespaces such as `project.observation.*`) was called on a project reference after that project was closed, either via `await project.close()` or by the server closing the project. A re-opened reference from a fresh `client.getProject(id)` is unaffected.
-- **`ClientClosedError`** (`code: 'CLIENT_CLOSED'`) — a method was called on the CoMapeo client, or on any project reference, after the whole client was torn down with [`closeMapeoClient`](#closemapeoclientmapeoclient-clientapimapeomanager-void).
+- **`ClientClosedError`** (`code: 'CLIENT_CLOSED'`) — a method was called on the CoMapeo client, or on any project reference, after the whole client was torn down with [`closeMapeoClient`](#closemapeoclientmapeoclient-clientapimapeomanager-void). This includes `getProject(id)`, which after close rejects with `ClientClosedError` rather than returning a reference — whether or not that project was fetched earlier.
 
 RPC methods return a rejected `Promise` carrying the error, so failures surface through normal `await`/`.catch()` handling. The exception is the event-emitter methods (`on`, `once`, `off`, `removeListener`, `emit`, etc.), which return synchronously rather than a promise — after close these **throw** the same error synchronously instead, so it surfaces at the call site rather than as an unhandled rejection.
 
