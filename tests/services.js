@@ -8,9 +8,11 @@ import {
 import { createComapeoServicesServer } from '../src/server.js'
 import { RpcChannelClosedError } from '../src/errors.js'
 
+/** @import { ComapeoServicesApi } from '../src/server.js' */
+
 /**
  * @param {import('node:test').TestContext} t
- * @param {import('../src/server.js').ComapeoServicesApi} [servicesApi]
+ * @param {ComapeoServicesApi} [servicesApi]
  */
 function setup(t, servicesApi) {
   const { port1, port2 } = new MessageChannel()
@@ -34,7 +36,7 @@ function setup(t, servicesApi) {
 
 const MOCK_BASE_URL = 'http://localhost:3000'
 
-/** @returns {import('../src/server.js').ComapeoServicesApi} */
+/** @returns {ComapeoServicesApi} */
 function createMockServices() {
   return {
     mapServer: {
@@ -56,7 +58,7 @@ test('Services client can call server method and get result', async (t) => {
 test('Services concurrent calls resolve correctly', async (t) => {
   let callCount = 0
 
-  /** @type {import('../src/server.js').ComapeoServicesApi} */
+  /** @type {ComapeoServicesApi} */
   const api = {
     mapServer: {
       async getBaseUrl() {
@@ -82,7 +84,7 @@ test('Services concurrent calls resolve correctly', async (t) => {
 
 test('Services server method errors are propagated to client', async (t) => {
   const expectedError = new Error('Error')
-  /** @type {import('../src/server.js').ComapeoServicesApi} */
+  /** @type {ComapeoServicesApi} */
   const api = {
     mapServer: {
       async getBaseUrl() {
