@@ -1,5 +1,8 @@
-import { createMapeoClient, closeMapeoClient } from '../src/client.js'
-import { createMapeoServer } from '../src/server.js'
+import {
+  createComapeoCoreClient,
+  closeComapeoCoreClient,
+} from '../src/client.js'
+import { createComapeoCoreServer } from '../src/server.js'
 
 import { FakeManager } from './fake-manager.js'
 
@@ -10,15 +13,15 @@ import { FakeManager } from './fake-manager.js'
 export function setup(t, manager = new FakeManager()) {
   const { port1, port2 } = new MessageChannel()
 
-  const server = createMapeoServer(/** @type {any} */ (manager), port1)
-  const client = createMapeoClient(port2)
+  const server = createComapeoCoreServer(/** @type {any} */ (manager), port1)
+  const client = createComapeoCoreClient(port2)
 
   port1.start()
   port2.start()
 
   t.after(async () => {
     server.close()
-    await closeMapeoClient(client)
+    await closeComapeoCoreClient(client)
     port1.close()
     port2.close()
   })

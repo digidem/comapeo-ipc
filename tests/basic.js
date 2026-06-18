@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { NotFoundError } from '@comapeo/core/errors.js'
 
 import { ClientClosedError, RpcChannelClosedError } from '../src/errors.js'
-import { closeMapeoClient } from '../src/client.js'
+import { closeComapeoCoreClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
 import { FakeManager } from './fake-manager.js'
@@ -141,7 +141,7 @@ test('Client calls fail after server closes', async (t) => {
   await projectBefore.$getProjectSettings()
 
   server.close()
-  await closeMapeoClient(client)
+  await closeComapeoCoreClient(client)
 
   // After close, getProject rejects uniformly with ClientClosedError — both
   // for a project fetched earlier (cached) and for one never fetched.
@@ -184,7 +184,7 @@ test('In-flight calls reject with RpcChannelClosedError when the client closes',
   // it rejects with the underlying channel-closed error as the channel tears
   // down. This is the behaviour the README documents for in-flight calls.
   const inFlight = client.listProjects()
-  const closing = closeMapeoClient(client)
+  const closing = closeComapeoCoreClient(client)
 
   await assert.rejects(inFlight, { code: RpcChannelClosedError.code })
   await closing

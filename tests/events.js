@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import pDefer from 'p-defer'
 
 import { ClientClosedError, ProjectClosedError } from '../src/errors.js'
-import { closeMapeoClient } from '../src/client.js'
+import { closeComapeoCoreClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
 import { FakeManager } from './fake-manager.js'
@@ -72,7 +72,7 @@ test('EventEmitter methods throw synchronously after the project is closed', asy
 test('EventEmitter methods throw synchronously after the client is closed', async (t) => {
   const { client } = setup(t)
 
-  await closeMapeoClient(client)
+  await closeComapeoCoreClient(client)
 
   assert.throws(() => client.on('local-peers', () => {}), {
     code: ClientClosedError.code,

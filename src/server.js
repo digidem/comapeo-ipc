@@ -1,8 +1,10 @@
 import { createServer } from 'rpc-reflector/server.js'
 import {
-  APP_RPC_ID,
+  COMAPEO_PREFIX,
   MANAGER_CHANNEL_ID,
-  MAPEO_RPC_ID,
+  PROJECT_INSTANCE_PREFIX,
+  PROJECT_ROUTING_ID,
+  SERVICES_ID,
   SubChannel,
 } from './lib/sub-channel.js'
 import { isRelevantEventData } from './lib/utils.js'
@@ -13,7 +15,7 @@ import { ProjectClosedError } from './errors.js'
  * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
-export function createMapeoServer(manager, messagePort, opts) {
+export function createComapeoCoreServer(manager, messagePort, opts) {
   // Per-project subchannels are keyed by an *instance id* — a string that is
   // unique to one open lifetime of one project. Every time a project is
   // opened (or re-opened after close), a new instance id is minted and
@@ -55,9 +57,10 @@ export function createMapeoServer(manager, messagePort, opts) {
   const closedInstanceIds = new Set()
 
   /**
-   * Instance ids we've already warned about dropping. Reaching the drop branch
-   * is a "shouldn't happen" case (see `handleMessage`); we warn once per id so
-   * a chatty foreign sender on a shared port can't flood logs while a genuine
+   * Instance ids we've already logged an error for. Reaching the drop branch
+   * is a "shouldn't happen" case — a prefixed id we minted but lost track of
+   * (foreign traffic is dropped earlier, see `handleMessage`); we log once
+   * per id so a repeated stray message can't flood logs while a genuine
    * routing bug stays visible.
    * @type {Set<string>}
    */
@@ -65,7 +68,7 @@ export function createMapeoServer(manager, messagePort, opts) {
 
   let instanceCounter = 0
 
-  const mapeoRpcApi = new MapeoRpcApi({
+  const projectRoutingApi = new ProjectRoutingApi({
     getProjectInstance(projectId) {
       const existing = currentInstanceForProject.get(projectId)
       if (existing) return existing
@@ -93,7 +96,7 @@ export function createMapeoServer(manager, messagePort, opts) {
     // to the client through rpc-reflector's standard error response.
     const project = await manager.getProject(projectId)
 
-    const instanceId = `${projectId}:${++instanceCounter}`
+    const instanceId = `${PROJECT_INSTANCE_PREFIX}${projectId}:${++instanceCounter}`
     const projectChannel = new SubChannel(messagePort, instanceId)
     existingInstanceChannels.set(instanceId, projectChannel)
 
@@ -115,13 +118,17 @@ export function createMapeoServer(manager, messagePort, opts) {
   }
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
-  const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
+  const projectRoutingChannel = new SubChannel(messagePort, PROJECT_ROUTING_ID)
 
   const managerServer = createServer(manager, managerChannel, opts)
-  const mapeoRpcServer = createServer(mapeoRpcApi, mapeoRpcChannel, opts)
+  const projectRoutingServer = createServer(
+    projectRoutingApi,
+    projectRoutingChannel,
+    opts,
+  )
 
   managerChannel.start()
-  mapeoRpcChannel.start()
+  projectRoutingChannel.start()
 
   messagePort.addEventListener('message', handleMessage)
 
@@ -144,8 +151,8 @@ export function createMapeoServer(manager, messagePort, opts) {
       droppedInstanceIds.clear()
       managerServer.close()
       managerChannel.close()
-      mapeoRpcServer.close()
-      mapeoRpcChannel.close()
+      projectRoutingServer.close()
+      projectRoutingChannel.close()
     },
   }
 
@@ -156,11 +163,17 @@ export function createMapeoServer(manager, messagePort, opts) {
     if (!isRelevantEventData(data)) return
     const { id } = data
 
+    // Not one of ours. Every id this library mints carries `COMAPEO_PREFIX`,
+    // so an id without it belongs to a foreign sender sharing this port —
+    // drop it silently (no warning) so unrelated traffic can't flood logs.
+    if (!id.startsWith(COMAPEO_PREFIX)) return
+
+    // Reserved channels and currently-open project instances are routed by
+    // their own SubChannel listeners; nothing to do here.
     if (
-      !id ||
       id === MANAGER_CHANNEL_ID ||
-      id === MAPEO_RPC_ID ||
-      id === APP_RPC_ID
+      id === PROJECT_ROUTING_ID ||
+      id === SERVICES_ID
     ) {
       return
     }
@@ -190,15 +203,15 @@ export function createMapeoServer(manager, messagePort, opts) {
       return
     }
 
-    // Unknown instance id. With the manager/mapeo-rpc/app-rpc channels and
-    // every open and closed project instance accounted for above, reaching
-    // here means the message isn't ours: a stale message from a prior
-    // `comapeo-ipc` session sharing this port, or a malformed/foreign message.
-    // We never minted this id, so the sender isn't a paired client and we
-    // can't answer it — drop it, warning once per id (see `droppedInstanceIds`).
+    // Carries our prefix but matches no known channel. With the
+    // manager/project-routing/services channels and every open and closed
+    // project instance accounted for above, reaching here means we minted
+    // this id and lost track of it (or a paired client desynced) — a genuine
+    // routing bug, not foreign traffic. Logged once per id (see
+    // `droppedInstanceIds`).
     if (!droppedInstanceIds.has(id)) {
       droppedInstanceIds.add(id)
-      console.warn(
+      console.error(
         `comapeo-ipc: dropping message for unrecognised channel id "${id}"`,
       )
     }
@@ -230,7 +243,7 @@ function createClosedProjectStub() {
   return new Proxy({}, handler)
 }
 
-export class MapeoRpcApi {
+export class ProjectRoutingApi {
   #getProjectInstance
 
   /**
@@ -256,26 +269,32 @@ export class MapeoRpcApi {
 }
 
 /**
- * @typedef {object} RpcApi
+ * The contract for app-provided services that live outside `@comapeo/core` —
+ * the map server today, and the blob and icon servers in the future (once
+ * extracted from core). The host app implements this; `@comapeo/core-react`
+ * and other consumers reach it through `createComapeoServicesClient`.
+ *
+ * @typedef {object} ComapeoServicesApi
  * @property {object} mapServer
  * @property {() => Promise<string>} mapServer.getBaseUrl Return the base URL of the map server
  */
 
 /**
- * RPC messages that are not part of core, e.g. the different servers for maps,
- * and in the future for serving blobs and icons (once extracted from core)
- * @param {RpcApi} rpc
+ * Serve the app-provided services API (see {@link ComapeoServicesApi}) over
+ * the shared message port.
+ *
+ * @param {ComapeoServicesApi} services
  * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createServer>[2]} [opts]
  */
-export function createAppRpcServer(rpc, messagePort, opts) {
-  const appRpcChannel = new SubChannel(messagePort, APP_RPC_ID)
-  const appRpcServer = createServer(rpc, appRpcChannel, opts)
-  appRpcChannel.start()
+export function createComapeoServicesServer(services, messagePort, opts) {
+  const servicesChannel = new SubChannel(messagePort, SERVICES_ID)
+  const servicesServer = createServer(services, servicesChannel, opts)
+  servicesChannel.start()
   return {
     close() {
-      appRpcServer.close()
-      appRpcChannel.close()
+      servicesServer.close()
+      servicesChannel.close()
     },
   }
 }

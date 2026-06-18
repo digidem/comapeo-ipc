@@ -1,8 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createMapeoClient, closeMapeoClient } from '../src/client.js'
-import { createMapeoServer } from '../src/server.js'
+import {
+  createComapeoCoreClient,
+  closeComapeoCoreClient,
+} from '../src/client.js'
+import { createComapeoCoreServer } from '../src/server.js'
 
 import { setup } from './helpers.js'
 import { FakeManager } from './fake-manager.js'
@@ -10,14 +13,21 @@ import { FakeManager } from './fake-manager.js'
 test('Malformed and unroutable messages are ignored and the client keeps working', async (t) => {
   const { client, port2 } = setup(t)
 
+  // A prefixed-but-unroutable id is logged via console.error; foreign and
+  // malformed messages should produce no log at all, so capture both streams.
   /** @type {string[]} */
-  const warnings = []
+  const logs = []
   const originalWarn = console.warn
+  const originalError = console.error
   console.warn = (/** @type {unknown[]} */ ...args) => {
-    warnings.push(String(args[0]))
+    logs.push(String(args[0]))
+  }
+  console.error = (/** @type {unknown[]} */ ...args) => {
+    logs.push(String(args[0]))
   }
   t.after(() => {
     console.warn = originalWarn
+    console.error = originalError
   })
 
   // Posting on port2 delivers to the server's port. None of these should throw
@@ -26,10 +36,15 @@ test('Malformed and unroutable messages are ignored and the client keeps working
   port2.postMessage(42)
   port2.postMessage(null)
   port2.postMessage({ no: 'id or message' })
-  // Well-formed envelope, but for an instance id the server never opened.
-  // Posted twice to exercise the warn-once dedupe.
-  port2.postMessage({ id: 'project-999:42', message: { value: 'whatever' } })
-  port2.postMessage({ id: 'project-999:42', message: { value: 'whatever' } })
+  // Well-formed envelope without our channel prefix: a foreign sender sharing
+  // the port. Dropped silently — not our traffic, so no warning.
+  port2.postMessage({ id: 'someone-elses-channel', message: { value: 'x' } })
+  // Well-formed envelope carrying our prefix but for an instance id the server
+  // never opened — a genuine routing miss. Posted twice to exercise the
+  // warn-once dedupe.
+  const unknownId = '@@comapeo/project/project-999:42'
+  port2.postMessage({ id: unknownId, message: { value: 'whatever' } })
+  port2.postMessage({ id: unknownId, message: { value: 'whatever' } })
 
   // Let the messages flush through the event loop.
   await new Promise((resolve) => setImmediate(resolve))
@@ -40,26 +55,29 @@ test('Malformed and unroutable messages are ignored and the client keeps working
   const settings = await project.$getProjectSettings()
   assert.equal(settings.name, 'mapeo')
 
-  // The unroutable id is warned about exactly once (deduped), not errored;
-  // the structurally-invalid messages are dropped without any warning.
-  const unrecognised = warnings.filter((w) => w.includes('project-999:42'))
+  // The prefixed-but-unroutable id is logged exactly once (deduped).
+  const unrecognised = logs.filter((w) => w.includes('project-999:42'))
   assert.equal(unrecognised.length, 1)
+  // The foreign (unprefixed) envelope and the structurally-invalid messages
+  // are dropped without any log.
+  const foreign = logs.filter((w) => w.includes('someone-elses-channel'))
+  assert.equal(foreign.length, 0)
 })
 
-test('createMapeoServer().close() is idempotent', async (t) => {
+test('createComapeoCoreServer().close() is idempotent', async (t) => {
   const { port1, port2 } = new MessageChannel()
 
-  const server = createMapeoServer(
+  const server = createComapeoCoreServer(
     /** @type {any} */ (new FakeManager()),
     port1,
   )
-  const client = createMapeoClient(port2)
+  const client = createComapeoCoreClient(port2)
 
   port1.start()
   port2.start()
 
   t.after(async () => {
-    await closeMapeoClient(client)
+    await closeComapeoCoreClient(client)
     port1.close()
     port2.close()
   })

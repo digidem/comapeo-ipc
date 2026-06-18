@@ -1,11 +1,15 @@
 export {
-  createMapeoClient,
-  closeMapeoClient,
-  createAppRpcClient,
-  closeAppRpcClient,
+  createComapeoCoreClient,
+  closeComapeoCoreClient,
+  createComapeoServicesClient,
+  closeComapeoServicesClient,
 } from './client.js'
-export { createMapeoServer, createAppRpcServer } from './server.js'
+export {
+  createComapeoCoreServer,
+  createComapeoServicesServer,
+} from './server.js'
 
-/** @typedef {import('./client.js').MapeoClientApi} MapeoClientApi */
-/** @typedef {import('./client.js').MapeoProjectApi} MapeoProjectApi */
-/** @typedef {import('./client.js').AppRpcApi} AppRpcApi */
+/** @typedef {import('./client.js').ComapeoCoreClientApi} ComapeoCoreClientApi */
+/** @typedef {import('./client.js').ComapeoProjectClientApi} ComapeoProjectClientApi */
+/** @typedef {import('./client.js').ComapeoServicesClientApi} ComapeoServicesClientApi */
+/** @typedef {import('./server.js').ComapeoServicesApi} ComapeoServicesApi */
