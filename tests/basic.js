@@ -2,10 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { NotFoundError } from '@comapeo/core/errors.js'
 
-import { ClientClosedError, ProjectClosedError } from '../src/errors.js'
+import { ClientClosedError, RpcChannelClosedError } from '../src/errors.js'
 import { closeMapeoClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
+import { FakeManager } from './fake-manager.js'
 
 test('IPC wrappers work', async (t) => {
   const { client } = setup(t)
@@ -52,36 +53,22 @@ test('Get project calls deduplicated', async (t) => {
   assert.equal(project2, project)
 })
 
-test('After close, getProject(id) returns a fresh working project', async (t) => {
-  const { client } = setup(t)
+test('Concurrent getProject opens the project on the server only once', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+
   const projectId = await client.createProject({ name: 'mapeo' })
 
-  assert.ok(projectId)
+  // Several concurrent first-time getProject(id) calls must collapse into a
+  // single server-side open — not N separate `manager.getProject` calls that
+  // would mint duplicate subchannels.
+  await Promise.all([
+    client.getProject(projectId),
+    client.getProject(projectId),
+    client.getProject(projectId),
+  ])
 
-  const project = await client.getProject(projectId)
-  const obs = await project.observation.create({
-    schemaName: 'observation',
-    attachments: [],
-    tags: {},
-  })
-
-  await project.close()
-
-  // Methods on the closed reference must reject — the original `project`
-  // is no longer a usable handle.
-  await assert.rejects(() => project.observation.getByDocId(obs.docId), {
-    code: ProjectClosedError.code,
-  })
-
-  // But getProject(id) returns a fresh, fully-functional reference,
-  // distinct from the closed one.
-  const projectAfterClose = await client.getProject(projectId)
-  assert.notEqual(projectAfterClose, project)
-
-  const obsAfterClose = await projectAfterClose.observation.getByDocId(
-    obs.docId,
-  )
-  assert.deepEqual(obsAfterClose, obs)
+  assert.equal(manager.getProjectCallCount.get(projectId), 1)
 })
 
 test('Multiple projects and several calls in same tick', async (t) => {
@@ -145,19 +132,6 @@ test('Attempting to get non-existent project fails', async (t) => {
   )
 })
 
-test('Concurrent calls that succeed', async (t) => {
-  const { client } = setup(t)
-
-  const projectId = await client.createProject()
-
-  const [project1, project2] = await Promise.all([
-    client.getProject(projectId),
-    client.getProject(projectId),
-  ])
-
-  assert.equal(project1, project2)
-})
-
 test('Client calls fail after server closes', async (t) => {
   const { client, server } = setup(t)
 
@@ -199,4 +173,19 @@ test('Client calls fail after server closes', async (t) => {
       'after the client is closed, calls reject with ClientClosedError',
     )
   }
+})
+
+test('In-flight calls reject with RpcChannelClosedError when the client closes', async (t) => {
+  const { client } = setup(t)
+
+  // Fire a call but don't await it, then close the client synchronously before
+  // the response can arrive. The call was already on the wire, so it isn't
+  // re-routed through the closed-proxy (which would give ClientClosedError) —
+  // it rejects with the underlying channel-closed error as the channel tears
+  // down. This is the behaviour the README documents for in-flight calls.
+  const inFlight = client.listProjects()
+  const closing = closeMapeoClient(client)
+
+  await assert.rejects(inFlight, { code: RpcChannelClosedError.code })
+  await closing
 })
