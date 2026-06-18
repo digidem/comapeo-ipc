@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { createAppRpcClient, closeAppRpcClient } from '../src/client.js'
 import { createAppRpcServer } from '../src/server.js'
-import { ChannelClosedError as RpcChannelClosedError } from 'rpc-reflector/errors.js'
+import { RpcChannelClosedError } from '../src/errors.js'
 
 /**
  * @param {import('node:test').TestContext} t

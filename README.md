@@ -6,6 +6,7 @@ IPC wrappers for [CoMapeo Core](https://github.com/digidem/comapeo-core). Meant 
 
 - [Installation](#installation)
 - [API](#api)
+- [Errors](#errors)
 - [Usage](#usage)
 - [License](#license)
 
@@ -34,6 +35,28 @@ Returns a client instance that reflects the interface of the `manager` provided 
 ### `closeMapeoClient(mapeoClient: ClientApi<MapeoManager>): void`
 
 Closes the IPC client instance. Does not close or destroy the `messagePort` provided to [`createMapeoClient`](#createmapeoclientmessageport-messageportlike-clientapimapeomanager).
+
+## Errors
+
+Error classes are available from the `@comapeo/ipc/errors.js` entrypoint:
+
+```ts
+import {
+  ProjectClosedError,
+  ManagerClosedError,
+  RpcChannelClosedError,
+  RpcTimeoutError,
+} from '@comapeo/ipc/errors.js'
+```
+
+After a reference is closed, calls made on it reject with a descriptive error:
+
+- **`ProjectClosedError`** (`code: 'PROJECT_CLOSED'`) — a method (including nested namespaces such as `project.observation.*`) was called on a project reference after that project was closed, either via `await project.close()` or by the server closing the project. A re-opened reference from a fresh `client.getProject(id)` is unaffected.
+- **`ClientClosedError`** (`code: 'CLIENT_CLOSED'`) — a method was called on the CoMapeo client, or on any project reference, after the whole client was torn down with [`closeMapeoClient`](#closemapeoclientmapeoclient-clientapimapeomanager-void).
+
+RPC methods return a rejected `Promise` carrying the error, so failures surface through normal `await`/`.catch()` handling. The exception is the event-emitter methods (`on`, `once`, `off`, `removeListener`, `emit`, etc.), which return synchronously rather than a promise — after close these **throw** the same error synchronously instead, so it surfaces at the call site rather than as an unhandled rejection.
+
+Calls that were already in flight when the close happened are not re-routed: they reject with **`RpcChannelClosedError`** as the underlying channel tears down. `RpcTimeoutError` is thrown when a call exceeds the `opts.timeout` passed to [`createMapeoClient`](#createmapeoclientmessageport-messageportlike-clientapimapeomanager).
 
 ## Usage
 

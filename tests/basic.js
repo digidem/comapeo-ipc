@@ -1,36 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { NotFoundError } from '@comapeo/core/errors.js'
 
+import { ClientClosedError, ProjectClosedError } from '../src/errors.js'
 import { closeMapeoClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
-
-test('IPC wrappers work', async (t) => {
-  const { client } = setup(t)
-
-  const projectId = await client.createProject({ name: 'mapeo' })
-
-  assert.ok(projectId)
-
-  const project = await client.getProject(projectId)
-
-  assert.ok(project)
-
-  const projectSettings = await project.$getProjectSettings()
-
-  assert.deepEqual(projectSettings, {
-    name: 'mapeo',
-    configMetadata: undefined,
-    defaultPresets: undefined,
-    projectColor: undefined,
-    projectDescription: undefined,
-    sendStats: false,
-  })
-
-  const isArchiveDevice = await client.getIsArchiveDevice()
-
-  assert.ok(isArchiveDevice)
-})
 
 test('IPC wrappers work', async (t) => {
   const { client } = setup(t)
@@ -77,8 +52,8 @@ test('Get project calls deduplicated', async (t) => {
   assert.equal(project2, project)
 })
 
-test('Project methods work after project is closed', async (t) => {
-  const { client, serverManager } = setup(t)
+test('After close, getProject(id) returns a fresh working project', async (t) => {
+  const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
 
   assert.ok(projectId)
@@ -92,11 +67,17 @@ test('Project methods work after project is closed', async (t) => {
 
   await project.close()
 
-  // Even after project is closed on server, client can still get the project IPC instance
-  const projectAfterClose = await client.getProject(projectId)
-  assert.ok(projectAfterClose)
+  // Methods on the closed reference must reject — the original `project`
+  // is no longer a usable handle.
+  await assert.rejects(() => project.observation.getByDocId(obs.docId), {
+    code: ProjectClosedError.code,
+  })
 
-  // Ensure that the project methods still work
+  // But getProject(id) returns a fresh, fully-functional reference,
+  // distinct from the closed one.
+  const projectAfterClose = await client.getProject(projectId)
+  assert.notEqual(projectAfterClose, project)
+
   const obsAfterClose = await projectAfterClose.observation.getByDocId(
     obs.docId,
   )
@@ -146,9 +127,12 @@ test('Multiple projects and several calls in same tick', async (t) => {
 test('Attempting to get non-existent project fails', async (t) => {
   const { client } = setup(t)
 
-  await assert.rejects(async () => {
-    await client.getProject('mapeo')
-  })
+  await assert.rejects(
+    async () => {
+      await client.getProject('mapeo')
+    },
+    { code: NotFoundError.code },
+  )
 
   const results = await Promise.allSettled([
     client.getProject('mapeo'),
@@ -205,6 +189,12 @@ test('Client calls fail after server closes', async (t) => {
       'rejected',
       // @ts-ignore
       result.reason,
+    )
+    assert.equal(
+      // @ts-ignore
+      result.reason.code,
+      ClientClosedError.code,
+      'after the client is closed, calls reject with ManagerClosedError',
     )
   }
 })
