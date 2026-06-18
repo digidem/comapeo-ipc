@@ -54,6 +54,15 @@ export function createMapeoServer(manager, messagePort, opts) {
    */
   const closedInstanceIds = new Set()
 
+  /**
+   * Instance ids we've already warned about dropping. Reaching the drop branch
+   * is a "shouldn't happen" case (see `handleMessage`); we warn once per id so
+   * a chatty foreign sender on a shared port can't flood logs while a genuine
+   * routing bug stays visible.
+   * @type {Set<string>}
+   */
+  const droppedInstanceIds = new Set()
+
   let instanceCounter = 0
 
   const mapeoRpcApi = new MapeoRpcApi({
@@ -132,6 +141,7 @@ export function createMapeoServer(manager, messagePort, opts) {
 
       currentInstanceForProject.clear()
       closedInstanceIds.clear()
+      droppedInstanceIds.clear()
       managerServer.close()
       managerChannel.close()
       mapeoRpcServer.close()
@@ -146,7 +156,14 @@ export function createMapeoServer(manager, messagePort, opts) {
     if (!isRelevantEventData(data)) return
     const { id } = data
 
-    if (!id || id === MANAGER_CHANNEL_ID || id === MAPEO_RPC_ID) return
+    if (
+      !id ||
+      id === MANAGER_CHANNEL_ID ||
+      id === MAPEO_RPC_ID ||
+      id === APP_RPC_ID
+    ) {
+      return
+    }
 
     if (existingInstanceChannels.has(id)) return
 
@@ -173,10 +190,18 @@ export function createMapeoServer(manager, messagePort, opts) {
       return
     }
 
-    // Unknown instance id — silently drop. Could happen for a malformed
-    // message or a stale message from a prior `comapeo-ipc` session sharing
-    // the same messagePort.
-    console.error(`Dropping message for unknown instance id ${id}`)
+    // Unknown instance id. With the manager/mapeo-rpc/app-rpc channels and
+    // every open and closed project instance accounted for above, reaching
+    // here means the message isn't ours: a stale message from a prior
+    // `comapeo-ipc` session sharing this port, or a malformed/foreign message.
+    // We never minted this id, so the sender isn't a paired client and we
+    // can't answer it — drop it, warning once per id (see `droppedInstanceIds`).
+    if (!droppedInstanceIds.has(id)) {
+      droppedInstanceIds.add(id)
+      console.warn(
+        `comapeo-ipc: dropping message for unrecognised channel id "${id}"`,
+      )
+    }
   }
 }
 
