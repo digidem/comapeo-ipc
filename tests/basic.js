@@ -169,15 +169,17 @@ test('Client calls fail after server closes', async (t) => {
   server.close()
   await closeMapeoClient(client)
 
-  const projectAfter = await client.getProject(projectId)
+  // After close, getProject rejects uniformly with ClientClosedError — both
+  // for a project fetched earlier (cached) and for one never fetched.
+  await assert.rejects(() => client.getProject(projectId), {
+    code: ClientClosedError.code,
+  })
+  await assert.rejects(() => client.getProject('never-fetched'), {
+    code: ClientClosedError.code,
+  })
 
-  // Even after server closes we're still able to get the project ipc instance, which is okay
-  // because any field access should fail on that, rendering it unusable
-  // Adding this assertion to track changes in this behavior
-  assert.ok(projectAfter)
-
-  // Doing it this way to speed up the test because each should wait for a timeout
-  // Attempting to access any fields on the ipc instances should fail (aside from client.getProject, which is tested above)
+  // Method calls on the client and on a previously-obtained project reference
+  // also reject with ClientClosedError.
   const results = await Promise.allSettled([
     client.listProjects(),
     projectBefore.$getProjectSettings(),
@@ -194,7 +196,7 @@ test('Client calls fail after server closes', async (t) => {
       // @ts-ignore
       result.reason.code,
       ClientClosedError.code,
-      'after the client is closed, calls reject with ManagerClosedError',
+      'after the client is closed, calls reject with ClientClosedError',
     )
   }
 })

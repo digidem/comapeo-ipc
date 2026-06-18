@@ -164,11 +164,13 @@ export function createMapeoClient(messagePort, opts = {}) {
    * @returns {Promise<MapeoProjectApi>}
    */
   async function createProjectClient(projectPublicId) {
+    // Checked before the cache lookup so `getProject` rejects uniformly after
+    // close — whether or not this id was fetched (and cached) earlier.
+    if (clientClosed) throw new ClientClosedError()
+
     const existingClientPromise = projectClientPromises.get(projectPublicId)
 
     if (existingClientPromise) return existingClientPromise
-
-    if (clientClosed) throw new ClientClosedError()
 
     /** @type {import('p-defer').DeferredPromise<import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>>} */
     const deferred = pDefer()
