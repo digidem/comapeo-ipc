@@ -1,27 +1,32 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createAppRpcClient, closeAppRpcClient } from '../src/client.js'
-import { createAppRpcServer } from '../src/server.js'
+import {
+  createComapeoServicesClient,
+  closeComapeoServicesClient,
+} from '../src/client.js'
+import { createComapeoServicesServer } from '../src/server.js'
 import { RpcChannelClosedError } from '../src/errors.js'
+
+/** @import { ComapeoServicesApi } from '../src/server.js' */
 
 /**
  * @param {import('node:test').TestContext} t
- * @param {import('../src/server.js').RpcApi} [rpcApi]
+ * @param {ComapeoServicesApi} [servicesApi]
  */
-function setup(t, rpcApi) {
+function setup(t, servicesApi) {
   const { port1, port2 } = new MessageChannel()
 
-  const api = rpcApi || createMockRpcApi()
-  const server = createAppRpcServer(api, port1)
-  const client = createAppRpcClient(port2)
+  const api = servicesApi || createMockServices()
+  const server = createComapeoServicesServer(api, port1)
+  const client = createComapeoServicesClient(port2)
 
   port1.start()
   port2.start()
 
   t.after(() => {
     server.close()
-    closeAppRpcClient(client)
+    closeComapeoServicesClient(client)
     port1.close()
     port2.close()
   })
@@ -31,8 +36,8 @@ function setup(t, rpcApi) {
 
 const MOCK_BASE_URL = 'http://localhost:3000'
 
-/** @returns {import('../src/server.js').RpcApi} */
-function createMockRpcApi() {
+/** @returns {ComapeoServicesApi} */
+function createMockServices() {
   return {
     mapServer: {
       async getBaseUrl() {
@@ -42,7 +47,7 @@ function createMockRpcApi() {
   }
 }
 
-test('AppRpc client can call server method and get result', async (t) => {
+test('Services client can call server method and get result', async (t) => {
   const { client } = setup(t)
 
   const result = await client.mapServer.getBaseUrl()
@@ -50,10 +55,10 @@ test('AppRpc client can call server method and get result', async (t) => {
   assert.equal(result, MOCK_BASE_URL)
 })
 
-test('AppRpc concurrent calls resolve correctly', async (t) => {
+test('Services concurrent calls resolve correctly', async (t) => {
   let callCount = 0
 
-  /** @type {import('../src/server.js').RpcApi} */
+  /** @type {ComapeoServicesApi} */
   const api = {
     mapServer: {
       async getBaseUrl() {
@@ -77,9 +82,9 @@ test('AppRpc concurrent calls resolve correctly', async (t) => {
   assert.equal(results[2], MOCK_BASE_URL + '-3')
 })
 
-test('AppRpc server method errors are propagated to client', async (t) => {
+test('Services server method errors are propagated to client', async (t) => {
   const expectedError = new Error('Error')
-  /** @type {import('../src/server.js').RpcApi} */
+  /** @type {ComapeoServicesApi} */
   const api = {
     mapServer: {
       async getBaseUrl() {
@@ -93,16 +98,16 @@ test('AppRpc server method errors are propagated to client', async (t) => {
   await assert.rejects(() => client.mapServer.getBaseUrl(), expectedError)
 })
 
-test('AppRpc client calls fail after server closes', async (t) => {
+test('Services client calls fail after server closes', async (t) => {
   const { port1, port2 } = new MessageChannel()
   t.after(() => {
     port1.close()
     port2.close()
   })
 
-  const api = createMockRpcApi()
-  const server = createAppRpcServer(api, port1)
-  const client = createAppRpcClient(port2)
+  const api = createMockServices()
+  const server = createComapeoServicesServer(api, port1)
+  const client = createComapeoServicesClient(port2)
 
   port1.start()
   port2.start()
@@ -112,19 +117,19 @@ test('AppRpc client calls fail after server closes', async (t) => {
   assert.equal(result, MOCK_BASE_URL)
 
   server.close()
-  closeAppRpcClient(client)
+  closeComapeoServicesClient(client)
 
   await assert.rejects(() => client.mapServer.getBaseUrl(), {
     code: RpcChannelClosedError.code,
   })
 })
 
-test('AppRpc server close is idempotent', async (t) => {
+test('Services server close is idempotent', async (t) => {
   const { port1, port2 } = new MessageChannel()
 
-  const api = createMockRpcApi()
-  const server = createAppRpcServer(api, port1)
-  const client = createAppRpcClient(port2)
+  const api = createMockServices()
+  const server = createComapeoServicesServer(api, port1)
+  const client = createComapeoServicesClient(port2)
 
   port1.start()
   port2.start()
@@ -133,7 +138,7 @@ test('AppRpc server close is idempotent', async (t) => {
   server.close()
   server.close()
 
-  closeAppRpcClient(client)
+  closeComapeoServicesClient(client)
 
   t.after(() => {
     port1.close()

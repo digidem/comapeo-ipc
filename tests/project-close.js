@@ -186,14 +186,13 @@ test('A method call posted before close completes still resolves', async (t) => 
 // Repeatedly opening and closing the same project must not accumulate
 // closed instances in IPC's per-project bookkeeping. An earlier draft of
 // this PR risked exactly that — every close would have left a stub
-// rpc-server (or a wrapper Proxy) bound to the closed MapeoProject,
-// growing linearly with the number of cycles.
+// rpc-server (or a wrapper Proxy) bound to the closed project, growing
+// linearly with the number of cycles.
 //
-// `@comapeo/core` itself retains the most-recently-closed MapeoProject
-// (verified independently), so we can't assert "all closed instances are
-// GC'd". What we *can* assert is that the IPC layer doesn't add to that
-// retention: after N cycles, at most one closed instance survives — the
-// upstream-retained latest one — not all N.
+// The fake manager releases its project instance on close (it holds no
+// reference to a closed project), so any instance still reachable after a
+// cycle is being retained by the IPC layer itself. We can therefore assert
+// the strong invariant: after N cycles, zero closed instances survive.
 //
 // Runs only when `global.gc` is available (npm test passes --expose-gc).
 test('Repeatedly opening and closing the same project does not retain prior instances', async (t) => {
@@ -228,9 +227,10 @@ test('Repeatedly opening and closing the same project does not retain prior inst
   }
 
   const survivors = refs.filter((ref) => ref.deref() !== undefined).length
-  assert.ok(
-    survivors <= 1,
-    `${survivors} of ${N} closed instances retained — expected at most 1 (the upstream-retained latest). A higher count means IPC is accumulating closed instances cycle over cycle.`,
+  assert.equal(
+    survivors,
+    0,
+    `${survivors} of ${N} closed instances retained — expected 0. A non-zero count means IPC is accumulating closed instances cycle over cycle.`,
   )
 })
 
