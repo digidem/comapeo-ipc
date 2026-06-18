@@ -2,9 +2,9 @@ import { createClient } from 'rpc-reflector/client.js'
 import pDefer from 'p-defer'
 
 import {
-  APP_RPC_ID,
   MANAGER_CHANNEL_ID,
-  MAPEO_RPC_ID,
+  PROJECT_ROUTING_ID,
+  SERVICES_ID,
   SubChannel,
 } from './lib/sub-channel.js'
 import { ClientClosedError, ProjectClosedError } from './errors.js'
@@ -58,7 +58,7 @@ function createClosedProxy(makeError) {
 }
 
 /**
- * @typedef {import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>} MapeoProjectApi
+ * @typedef {import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>} ComapeoProjectClientApi
  */
 
 /**
@@ -67,9 +67,9 @@ function createClosedProxy(makeError) {
  *     import('@comapeo/core').MapeoManager,
  *     'getProject'
  *   > & {
- *     getProject: (projectPublicId: string) => Promise<MapeoProjectApi>
+ *     getProject: (projectPublicId: string) => Promise<ComapeoProjectClientApi>
  *   }
- * >} MapeoClientApi */
+ * >} ComapeoCoreClientApi */
 
 const CLOSE = Symbol('close')
 
@@ -77,16 +77,16 @@ const CLOSE = Symbol('close')
  * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createClient>[1]} [opts]
  *
- * @returns {MapeoClientApi}
+ * @returns {ComapeoCoreClientApi}
  */
-export function createMapeoClient(messagePort, opts = {}) {
+export function createComapeoCoreClient(messagePort, opts = {}) {
   /** @type {Map<string, Promise<import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>>>} */
   const projectClientPromises = new Map()
 
   /**
    * The rpc-reflector client + SubChannel pair for every currently-open
    * project. Entries are removed when the project's wrapped `close()`
-   * settles; `closeMapeoClient` sweeps whatever is left.
+   * settles; `closeComapeoCoreClient` sweeps whatever is left.
    * @type {Set<{
    *   client: import('rpc-reflector/client.js').ClientApi<import('@comapeo/core').MapeoProject>,
    *   channel: SubChannel,
@@ -95,17 +95,17 @@ export function createMapeoClient(messagePort, opts = {}) {
   const openProjectClients = new Set()
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
-  const mapeoRpcChannel = new SubChannel(messagePort, MAPEO_RPC_ID)
+  const projectRoutingChannel = new SubChannel(messagePort, PROJECT_ROUTING_ID)
 
   /** @type {import('rpc-reflector').ClientApi<import('@comapeo/core').MapeoManager>} */
   const managerClient = createClient(managerChannel, opts)
-  /** @type {import('rpc-reflector').ClientApi<import('./server.js').MapeoRpcApi>} */
-  const mapeoRpcClient = createClient(mapeoRpcChannel, opts)
+  /** @type {import('rpc-reflector').ClientApi<import('./server.js').ProjectRoutingApi>} */
+  const projectRoutingClient = createClient(projectRoutingChannel, opts)
 
-  mapeoRpcChannel.start()
+  projectRoutingChannel.start()
   managerChannel.start()
 
-  // Set once `closeMapeoClient` has torn the whole client down. Read by the
+  // Set once `closeComapeoCoreClient` has torn the whole client down. Read by the
   // manager proxy and the per-project wrappers so that calls after close
   // surface `ManagerClosedError` instead of rpc-reflector's `ChannelClosed`.
   let clientClosed = false
@@ -135,8 +135,8 @@ export function createMapeoClient(messagePort, opts = {}) {
 
           // Closed last so in-flight `assertProjectExists` calls awaited
           // above can complete rather than reject.
-          mapeoRpcChannel.close()
-          createClient.close(mapeoRpcClient)
+          projectRoutingChannel.close()
+          createClient.close(projectRoutingClient)
 
           clientClosed = true
         }
@@ -161,7 +161,7 @@ export function createMapeoClient(messagePort, opts = {}) {
 
   /**
    * @param {string} projectPublicId
-   * @returns {Promise<MapeoProjectApi>}
+   * @returns {Promise<ComapeoProjectClientApi>}
    */
   async function createProjectClient(projectPublicId) {
     // Checked before the cache lookup so `getProject` rejects uniformly after
@@ -186,7 +186,8 @@ export function createMapeoClient(messagePort, opts = {}) {
     /** @type {string} */
     let instanceId
     try {
-      instanceId = await mapeoRpcClient.assertProjectExists(projectPublicId)
+      instanceId =
+        await projectRoutingClient.assertProjectExists(projectPublicId)
     } catch (err) {
       // Failed to open the project — drop the cached promise so a
       // subsequent getProject() call can retry instead of getting back
@@ -257,41 +258,42 @@ export function createMapeoClient(messagePort, opts = {}) {
 }
 
 /**
- * @param {MapeoClientApi} client client created with `createMapeoClient`
+ * @param {ComapeoCoreClientApi} client client created with `createComapeoCoreClient`
  * @returns {Promise<void>}
  */
-export async function closeMapeoClient(client) {
+export async function closeComapeoCoreClient(client) {
   // @ts-expect-error
   return client[CLOSE]()
 }
 
 /**
- * @typedef {import('rpc-reflector/client.js').ClientApi<import('./server.js').RpcApi>} AppRpcApi
+ * @typedef {import('rpc-reflector/client.js').ClientApi<import('./server.js').ComapeoServicesApi>} ComapeoServicesClientApi
  */
 
 /**
- * Create an rpc client for application RPC messages that are not part of core,
- * e.g. the different servers for maps, and in the future for serving blobs and
- * icons (once extracted from core)
+ * Create a client for the app-provided services that live outside
+ * `@comapeo/core` — the map server today, and the blob and icon servers in the
+ * future (once extracted from core). The host app implements the server side;
+ * see {@link import('./server.js').ComapeoServicesApi}.
  *
  * @param {import('rpc-reflector').MessagePortLike} messagePort
  * @param {Parameters<typeof createClient>[1]} [opts]
- * @return {AppRpcApi}
+ * @return {ComapeoServicesClientApi}
  */
-export function createAppRpcClient(messagePort, opts = {}) {
-  const appRpcChannel = new SubChannel(messagePort, APP_RPC_ID)
-  const appRpcClient = /** @type {AppRpcApi} */ (
-    createClient(appRpcChannel, opts)
+export function createComapeoServicesClient(messagePort, opts = {}) {
+  const servicesChannel = new SubChannel(messagePort, SERVICES_ID)
+  const servicesClient = /** @type {ComapeoServicesClientApi} */ (
+    createClient(servicesChannel, opts)
   )
-  appRpcChannel.start()
-  return appRpcClient
+  servicesChannel.start()
+  return servicesClient
 }
 
 /**
- * Close the app RPC client (removes listeners but does not close the message port)
+ * Close the services client (removes listeners but does not close the message port)
  *
- * @param {AppRpcApi} appRpcClient client created with `createAppRpcClient`
+ * @param {ComapeoServicesClientApi} servicesClient client created with `createComapeoServicesClient`
  */
-export function closeAppRpcClient(appRpcClient) {
-  createClient.close(appRpcClient)
+export function closeComapeoServicesClient(servicesClient) {
+  createClient.close(servicesClient)
 }

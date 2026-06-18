@@ -2,25 +2,28 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  createMapeoClient,
-  closeMapeoClient,
-  createAppRpcClient,
-  closeAppRpcClient,
+  createComapeoCoreClient,
+  closeComapeoCoreClient,
+  createComapeoServicesClient,
+  closeComapeoServicesClient,
 } from '../src/client.js'
-import { createMapeoServer, createAppRpcServer } from '../src/server.js'
+import {
+  createComapeoCoreServer,
+  createComapeoServicesServer,
+} from '../src/server.js'
 
 import { FakeManager } from './fake-manager.js'
 
 const MOCK_BASE_URL = 'http://localhost:3000'
 
 // The whole reason this module exists on top of rpc-reflector: several logical
-// RPC endpoints (manager, the mapeo-rpc helper channel, per-project channels,
-// and app-rpc) are multiplexed over a SINGLE message port, distinguished by a
-// subchannel id. These tests drive the manager and app-rpc endpoints over one
-// shared port and assert there's no cross-talk.
-test('Manager and App RPC coexist on a single shared message port', async (t) => {
-  // The manager server's per-project router and the app-rpc server share this
-  // port; app-rpc traffic must not be mistaken for an unroutable message.
+// RPC endpoints (manager, the project-routing helper channel, per-project
+// channels, and the services API) are multiplexed over a SINGLE message port,
+// distinguished by a subchannel id. These tests drive the core and services
+// endpoints over one shared port and assert there's no cross-talk.
+test('Core and services clients coexist on a single shared message port', async (t) => {
+  // The core server's per-project router and the services server share this
+  // port; services traffic must not be mistaken for an unroutable message.
   /** @type {string[]} */
   const noise = []
   const originalWarn = console.warn
@@ -37,8 +40,8 @@ test('Manager and App RPC coexist on a single shared message port', async (t) =>
   const { port1, port2 } = new MessageChannel()
 
   const manager = new FakeManager()
-  /** @type {import('../src/server.js').RpcApi} */
-  const appApi = {
+  /** @type {import('../src/server.js').ComapeoServicesApi} */
+  const services = {
     mapServer: {
       async getBaseUrl() {
         return MOCK_BASE_URL
@@ -46,37 +49,40 @@ test('Manager and App RPC coexist on a single shared message port', async (t) =>
     },
   }
 
-  const mapeoServer = createMapeoServer(/** @type {any} */ (manager), port1)
-  const appServer = createAppRpcServer(appApi, port1)
+  const coreServer = createComapeoCoreServer(
+    /** @type {any} */ (manager),
+    port1,
+  )
+  const servicesServer = createComapeoServicesServer(services, port1)
 
-  const mapeoClient = createMapeoClient(port2)
-  const appClient = createAppRpcClient(port2)
+  const coreClient = createComapeoCoreClient(port2)
+  const servicesClient = createComapeoServicesClient(port2)
 
   port1.start()
   port2.start()
 
   t.after(async () => {
-    mapeoServer.close()
-    appServer.close()
-    await closeMapeoClient(mapeoClient)
-    closeAppRpcClient(appClient)
+    coreServer.close()
+    servicesServer.close()
+    await closeComapeoCoreClient(coreClient)
+    closeComapeoServicesClient(servicesClient)
     port1.close()
     port2.close()
   })
 
-  const projectId = await mapeoClient.createProject({ name: 'mapeo' })
-  const baseUrl = await appClient.mapServer.getBaseUrl()
+  const projectId = await coreClient.createProject({ name: 'mapeo' })
+  const baseUrl = await servicesClient.mapServer.getBaseUrl()
 
   assert.ok(projectId)
   assert.equal(baseUrl, MOCK_BASE_URL)
 
   // Interleave concurrent traffic across both endpoints (and a per-project
   // channel) on the same port; each call must land on its own handler.
-  const project = await mapeoClient.getProject(projectId)
+  const project = await coreClient.getProject(projectId)
   const [settings, url, projects] = await Promise.all([
     project.$getProjectSettings(),
-    appClient.mapServer.getBaseUrl(),
-    mapeoClient.listProjects(),
+    servicesClient.mapServer.getBaseUrl(),
+    coreClient.listProjects(),
   ])
 
   assert.equal(settings.name, 'mapeo')
@@ -94,8 +100,8 @@ test('Closing one endpoint on a shared port leaves the other working', async (t)
   const { port1, port2 } = new MessageChannel()
 
   const manager = new FakeManager()
-  /** @type {import('../src/server.js').RpcApi} */
-  const appApi = {
+  /** @type {import('../src/server.js').ComapeoServicesApi} */
+  const services = {
     mapServer: {
       async getBaseUrl() {
         return MOCK_BASE_URL
@@ -103,29 +109,32 @@ test('Closing one endpoint on a shared port leaves the other working', async (t)
     },
   }
 
-  const mapeoServer = createMapeoServer(/** @type {any} */ (manager), port1)
-  const appServer = createAppRpcServer(appApi, port1)
+  const coreServer = createComapeoCoreServer(
+    /** @type {any} */ (manager),
+    port1,
+  )
+  const servicesServer = createComapeoServicesServer(services, port1)
 
-  const mapeoClient = createMapeoClient(port2)
-  const appClient = createAppRpcClient(port2)
+  const coreClient = createComapeoCoreClient(port2)
+  const servicesClient = createComapeoServicesClient(port2)
 
   port1.start()
   port2.start()
 
   t.after(async () => {
-    mapeoServer.close()
-    await closeMapeoClient(mapeoClient)
+    coreServer.close()
+    await closeComapeoCoreClient(coreClient)
     port1.close()
     port2.close()
   })
 
-  // Tear down only the app-rpc endpoint. The manager endpoint shares the same
+  // Tear down only the services endpoint. The core endpoint shares the same
   // port and must be unaffected.
-  appServer.close()
-  closeAppRpcClient(appClient)
+  servicesServer.close()
+  closeComapeoServicesClient(servicesClient)
 
-  const projectId = await mapeoClient.createProject({ name: 'mapeo' })
+  const projectId = await coreClient.createProject({ name: 'mapeo' })
   assert.ok(projectId)
-  const projects = await mapeoClient.listProjects()
+  const projects = await coreClient.listProjects()
   assert.equal(projects.length, 1)
 })

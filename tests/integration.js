@@ -8,8 +8,11 @@ import { KeyManager } from '@mapeo/crypto'
 import { MapeoManager } from '@comapeo/core'
 import Fastify from 'fastify'
 
-import { createMapeoClient, closeMapeoClient } from '../src/client.js'
-import { createMapeoServer } from '../src/server.js'
+import {
+  createComapeoCoreClient,
+  closeComapeoCoreClient,
+} from '../src/client.js'
+import { createComapeoCoreServer } from '../src/server.js'
 
 const require = createRequire(import.meta.url)
 
@@ -43,15 +46,15 @@ test('end-to-end against a real MapeoManager', async (t) => {
   })
 
   const { port1, port2 } = new MessageChannel()
-  const server = createMapeoServer(manager, port1)
-  const client = createMapeoClient(port2)
+  const server = createComapeoCoreServer(manager, port1)
+  const client = createComapeoCoreClient(port2)
 
   port1.start()
   port2.start()
 
   t.after(async () => {
     server.close()
-    await closeMapeoClient(client)
+    await closeComapeoCoreClient(client)
     fs.rmSync(dbDir, { recursive: true, force: true })
     fs.rmSync(coreDir, { recursive: true, force: true })
     port1.close()

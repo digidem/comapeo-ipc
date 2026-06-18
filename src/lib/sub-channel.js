@@ -1,9 +1,17 @@
 import { isRelevantEventData } from './utils.js'
 
-// Ideally unique ID used for identifying "global" Mapeo IPC messages
-export const MAPEO_RPC_ID = '@@mapeo-rpc'
-export const APP_RPC_ID = '@@app-rpc'
-export const MANAGER_CHANNEL_ID = '@@manager'
+// Shared prefix on every channel id this library mints. It lets the server
+// tell its own traffic from a foreign sender sharing the same port: an id
+// without this prefix isn't ours and is ignored without warning.
+export const COMAPEO_PREFIX = '@@comapeo/'
+
+export const MANAGER_CHANNEL_ID = '@@comapeo/manager'
+export const PROJECT_ROUTING_ID = '@@comapeo/project-routing'
+export const SERVICES_ID = '@@comapeo/services'
+
+// Prefix for per-project instance channel ids; the rest of the id is the
+// project's public id plus a per-open counter (see `openProjectInstance`).
+export const PROJECT_INSTANCE_PREFIX = '@@comapeo/project/'
 
 /** @import {MessagePortLike, MessageEvent} from 'rpc-reflector' */
 

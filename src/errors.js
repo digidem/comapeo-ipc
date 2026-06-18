@@ -17,8 +17,8 @@ export const ProjectClosedError = createErrorClass({
 })
 
 /**
- * Thrown client-side when a method is called after the MapeoManager client
- * (the whole IPC client) has been closed via `closeMapeoClient`.
+ * Thrown client-side when a method is called after the CoMapeo core client
+ * (the whole IPC client) has been closed via `closeComapeoCoreClient`.
  */
 export const ClientClosedError = createErrorClass({
   code: 'CLIENT_CLOSED',
