@@ -240,9 +240,6 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
               try {
                 await target.close()
               } finally {
-                closed = true
-                projectClientPromises.delete(projectPublicId)
-                openProjectClients.delete(registryEntry)
                 createClient.close(projectClient)
                 projectChannel.close()
               }
@@ -255,6 +252,11 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
         }
         return Reflect.get(target, prop, receiver)
       },
+    })
+    wrappedProjectClient.once('close', () => {
+      closed = true
+      projectClientPromises.delete(projectPublicId)
+      openProjectClients.delete(registryEntry)
     })
     deferred.resolve(wrappedProjectClient)
     return wrappedProjectClient
