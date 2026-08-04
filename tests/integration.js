@@ -13,6 +13,7 @@ import {
   closeComapeoCoreClient,
 } from '../src/client.js'
 import { createComapeoCoreServer } from '../src/server.js'
+import { ProjectClosedError } from '../src/errors.js'
 
 const require = createRequire(import.meta.url)
 
@@ -32,7 +33,66 @@ const clientMigrationsFolder = path.join(
 // of the suite runs against an in-memory fake (see fake-manager.js); this one
 // proves the IPC wiring matches the real manager/project API shape and that
 // real values round-trip over the channel.
+
+/**
+ * @param {import('node:test').TestContext} t
+ */
 test('end-to-end against a real MapeoManager', async (t) => {
+  const { server, client } = setup(t)
+  // Manager methods round-trip.
+  const projectId = await client.createProject({ name: 'mapeo' })
+  assert.ok(projectId)
+
+  const listed = await client.listProjects()
+  assert.equal(listed.length, 1)
+
+  // Per-project subchannel: settings, a nested-namespace write + read back,
+  // then close.
+  const project = await client.getProject(projectId)
+
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+
+  const obs = await project.observation.create({
+    schemaName: 'observation',
+    attachments: [],
+    tags: {},
+  })
+  const readBack = await project.observation.getByDocId(obs.docId)
+  assert.equal(readBack.docId, obs.docId)
+
+  await project.close()
+})
+
+/**
+ * @param {import('node:test').TestContext} t
+ */
+test('handle manager initiating the close', async (t) => {
+  const { server, client, manager } = setup(t)
+  // Manager methods round-trip.
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+  assert.ok(projectId)
+
+  const clientProject = await client.getProject(projectId)
+  const rawProject = await manager.getProject(projectId)
+
+  // This simulates the project being closed through other means like leaveProject
+  await rawProject.close()
+
+  await assert.rejects(() => clientProject.$getProjectSettings(), {
+    code: ProjectClosedError.code,
+  })
+
+  const reOpened = await client.getProject(projectId)
+
+  await reOpened.$getProjectSettings()
+})
+
+/**
+ * @param {import('node:test').TestContext} t
+ */
+function setup(t) {
   const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comapeo-ipc-it-db-'))
   const coreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'comapeo-ipc-it-core-'))
 
@@ -61,27 +121,5 @@ test('end-to-end against a real MapeoManager', async (t) => {
     port2.close()
   })
 
-  // Manager methods round-trip.
-  const projectId = await client.createProject({ name: 'mapeo' })
-  assert.ok(projectId)
-
-  const listed = await client.listProjects()
-  assert.equal(listed.length, 1)
-
-  // Per-project subchannel: settings, a nested-namespace write + read back,
-  // then close.
-  const project = await client.getProject(projectId)
-
-  const settings = await project.$getProjectSettings()
-  assert.equal(settings.name, 'mapeo')
-
-  const obs = await project.observation.create({
-    schemaName: 'observation',
-    attachments: [],
-    tags: {},
-  })
-  const readBack = await project.observation.getByDocId(obs.docId)
-  assert.equal(readBack.docId, obs.docId)
-
-  await project.close()
-})
+  return { server, client, manager }
+}
