@@ -77,11 +77,10 @@ test('handle manager initiating the close', async (t) => {
   const clientProject = await client.getProject(projectId)
   const rawProject = await manager.getProject(projectId)
 
-  // TODO: Error, the close event isnt done on the client side after this finishes
   // This simulates the project being closed through other means like leaveProject
   await rawProject.close()
 
-  assert.rejects(() => clientProject.$getProjectSettings(), {
+  await assert.rejects(() => clientProject.$getProjectSettings(), {
     code: ProjectClosedError.code,
   })
 
