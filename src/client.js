@@ -1,5 +1,4 @@
 import { createClient } from 'rpc-reflector/client.js'
-import pDefer from 'p-defer'
 
 import {
   MANAGER_CHANNEL_ID,
@@ -84,8 +83,23 @@ const CLOSE = Symbol('close')
  * @returns {ComapeoCoreClientApi}
  */
 export function createComapeoCoreClient(messagePort, opts = {}) {
-  /** @type {Map<string, Promise<ClientApi<MapeoProject>>>} */
-  const projectClientPromises = new Map()
+  /**
+   * projectPublicId → wrapper bound to a specific instance id. Only returned
+   * after the server confirms that instance is still current — the server
+   * can close a project without the client asking (e.g. `leaveProject`).
+   * @type {Map<string, {
+   *   instanceId: string,
+   *   wrapper: ClientApi<MapeoProject>,
+   * }>}
+   */
+  const currentProjectClients = new Map()
+
+  /**
+   * projectPublicId → in-flight `getProject`. Dedupes concurrent calls;
+   * entries are removed on settle so later calls re-validate.
+   * @type {Map<string, Promise<ClientApi<MapeoProject>>>}
+   */
+  const pendingProjectClients = new Map()
 
   /**
    * The rpc-reflector client + SubChannel pair for every currently-open
@@ -126,16 +140,13 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
           // closing project clients. `openProjectClients` is populated
           // synchronously after `assertProjectExists` resolves, so any
           // creation that hasn't settled yet isn't in the registry.
-          await Promise.allSettled(projectClientPromises.values())
+          await Promise.allSettled(pendingProjectClients.values())
 
           for (const entry of openProjectClients) {
             createClient.close(entry.client)
             entry.channel.close()
           }
           openProjectClients.clear()
-          // `projectClientPromises` is intentionally NOT cleared: a
-          // `getProject(id)` after close returns the cached wrapper, whose
-          // method calls reject with `ManagerClosedError`.
 
           // Closed last so in-flight `assertProjectExists` calls awaited
           // above can complete rather than reject.
@@ -172,35 +183,45 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     // close — whether or not this id was fetched (and cached) earlier.
     if (clientClosed) throw new ClientClosedError()
 
-    const existingClientPromise = projectClientPromises.get(projectPublicId)
+    const pending = pendingProjectClients.get(projectPublicId)
+    if (pending) return pending
 
-    if (existingClientPromise) return existingClientPromise
-
-    /** @type {import('p-defer').DeferredPromise<ClientApi<MapeoProject>>} */
-    const deferred = pDefer()
-
-    projectClientPromises.set(projectPublicId, deferred.promise)
-
-    // Attach a no-op handler so that if the deferred rejects below before
-    // any other caller has awaited it, we don't get an unhandled rejection.
-    // (Removing the cache entry on failure means concurrent callers may
-    // never see deferred.promise.)
-    deferred.promise.catch(() => {})
-
-    /** @type {string} */
-    let instanceId
+    const promise = resolveProjectClient(projectPublicId)
+    pendingProjectClients.set(projectPublicId, promise)
     try {
-      instanceId =
-        await projectRoutingClient.assertProjectExists(projectPublicId)
-    } catch (err) {
-      // Failed to open the project — drop the cached promise so a
-      // subsequent getProject() call can retry instead of getting back
-      // the same rejected promise.
-      projectClientPromises.delete(projectPublicId)
-      deferred.reject(err)
-      throw err
+      return await promise
+    } finally {
+      pendingProjectClients.delete(projectPublicId)
     }
+  }
 
+  /**
+   * Return the cached wrapper only if the server confirms its instance id is
+   * still current; otherwise build a fresh one. The server evicts its routing
+   * entry synchronously on close, so this is correct even before the close
+   * event reaches this client.
+   *
+   * @param {string} projectPublicId
+   * @returns {Promise<ClientApi<MapeoProject>>}
+   */
+  async function resolveProjectClient(projectPublicId) {
+    const instanceId =
+      await projectRoutingClient.assertProjectExists(projectPublicId)
+
+    const current = currentProjectClients.get(projectPublicId)
+    if (current && current.instanceId === instanceId) return current.wrapper
+
+    const wrapper = createProjectClientWrapper(projectPublicId, instanceId)
+    currentProjectClients.set(projectPublicId, { instanceId, wrapper })
+    return wrapper
+  }
+
+  /**
+   * @param {string} projectPublicId
+   * @param {string} instanceId
+   * @returns {ClientApi<MapeoProject>}
+   */
+  function createProjectClientWrapper(projectPublicId, instanceId) {
     // Per-project messages are scoped to the current open instance, not the
     // project's public id. If this project is closed and re-opened later,
     // `assertProjectExists` returns a different instance id, so the new
@@ -215,8 +236,9 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     openProjectClients.add(registryEntry)
 
     // Wrap projectClient to intercept `close`: after the wire close settles,
-    // tear down the local client + channel — rejecting any in-flight calls —
-    // and evict the cache entry so a subsequent `getProject(id)` re-opens.
+    // tear down the local client + channel — rejecting any in-flight calls.
+    // Cache eviction is in the 'close' listener below, which also covers
+    // manager-initiated closes.
     // Further method calls on this wrapper reject with `ProjectClosedError`.
     // The close promise is cached so repeated `close()` calls return the
     // same result instead of failing on the already-closed channel. All
@@ -255,10 +277,14 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     })
     wrappedProjectClient.once('close', () => {
       closed = true
-      projectClientPromises.delete(projectPublicId)
+      // A late close event must not evict a newer wrapper cached for the
+      // re-opened instance.
+      const current = currentProjectClients.get(projectPublicId)
+      if (current?.wrapper === wrappedProjectClient) {
+        currentProjectClients.delete(projectPublicId)
+      }
       openProjectClients.delete(registryEntry)
     })
-    deferred.resolve(wrappedProjectClient)
     return wrappedProjectClient
   }
 }
