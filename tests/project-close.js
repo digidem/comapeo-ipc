@@ -168,6 +168,59 @@ test('When the server closes the project, client calls on the wrapper reject', a
   await reopenedServerProject.close()
 })
 
+// The next two tests pin recovery from a manager-initiated close — what
+// `MapeoManager.addProject` does to a previously-left project when a
+// re-invite is accepted (digidem/comapeo-mobile#2042). The cached client
+// wrapper for the closed instance must not keep being handed out by
+// `getProject` once the project can be re-opened.
+
+test('After a manager-initiated close is observed, getProject returns a fresh working instance', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  // Deliberately not node:events `once()`: its cleanup calls
+  // `removeListener` on the wrapper after the close event, which a closed
+  // wrapper may reject synchronously.
+  const closeObserved = new Promise((resolve) => {
+    project.once('close', resolve)
+  })
+  // Round-trip so the 'close' subscription is registered server-side
+  // (FIFO channel) before the close below emits.
+  await project.$getProjectSettings()
+
+  const serverProject = await serverManager.getProject(projectId)
+  await serverProject.close()
+  await closeObserved
+
+  const reOpened = await client.getProject(projectId)
+  const settings = await reOpened.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+  assert.notEqual(
+    reOpened,
+    project,
+    'getProject after an observed close should return a fresh wrapper',
+  )
+})
+
+test('getProject returns a working instance immediately after a manager-initiated close', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  await client.getProject(projectId)
+
+  const serverProject = await serverManager.getProject(projectId)
+  await serverProject.close()
+
+  // The close notification has not reached the client yet, so its cached
+  // wrapper still looks open. The server already knows the project is
+  // closed (it updated its routing state during close() above), so to
+  // return a working instance here getProject must ask the server rather
+  // than trust its cache.
+  const reOpened = await client.getProject(projectId)
+  const settings = await reOpened.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+})
+
 test('A method call posted before close completes still resolves', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
