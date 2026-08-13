@@ -7,9 +7,11 @@ import {
   createComapeoCoreClient,
   closeComapeoCoreClient,
   notifyCoreClientTransportReset,
+  resubscribeCoreClient,
   createComapeoServicesClient,
   closeComapeoServicesClient,
   notifyServicesClientTransportReset,
+  resubscribeServicesClient,
 } from '../src/client.js'
 import {
   createComapeoCoreServer,
@@ -74,23 +76,39 @@ test('Reset rejects in-flight project method calls with TransportClosedError', a
   })
 })
 
-test('Manager event subscriptions are replayed to the restarted server', async (t) => {
+test('Reset does not resubscribe; resubscribeCoreClient replays subscriptions and is idempotent', async (t) => {
   const { client, server, port1 } = setup(t)
 
-  /** @type {import('p-defer').DeferredPromise<unknown>} */
-  const deferred = pDefer()
-  client.on('local-peers', (peers) => deferred.resolve(peers))
+  /** @type {unknown[]} */
+  const received = []
+  client.on('local-peers', (peers) => received.push(peers))
   await client.listProjects()
 
   const { newManager } = restartServer(t, server, port1)
   notifyCoreClientTransportReset(client)
-  // Round-trip barrier so the replayed subscribe message has been processed.
+  // Round-trip barrier: had the reset replayed the subscription, the ON
+  // message would have been processed by now.
   await client.listProjects()
 
   const peers = [{ deviceId: 'peer-a' }]
   newManager.emit('local-peers', peers)
+  // Barrier to let any (unexpected) forwarded event flush through the port.
+  await client.listProjects()
+  assert.deepEqual(received, [], 'reset alone does not replay subscriptions')
 
-  assert.deepEqual(await deferred.promise, peers)
+  // Repeated calls are safe: the server ignores duplicate subscriptions, so
+  // events are not double-delivered.
+  resubscribeCoreClient(client)
+  resubscribeCoreClient(client)
+  await client.listProjects()
+
+  newManager.emit('local-peers', peers)
+  await client.listProjects()
+  assert.deepEqual(
+    received,
+    [peers],
+    'event is delivered exactly once after resubscribing',
+  )
 })
 
 test('Stale project wrapper is not reused after reset, even when the new server mints the same instance id', async (t) => {
@@ -122,6 +140,30 @@ test('Stale project wrapper is not reused after reset, even when the new server 
   assert.equal(newManager.getProjectCallCount.get(projectId), 1)
 })
 
+test('Reset fires each project wrapper’s close event exactly once', async (t) => {
+  const { client, server, port1 } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  let closeCount = 0
+  const noop = () => {}
+  project.on('close', () => {
+    closeCount++
+    // Teardown code commonly removes listeners from inside a close
+    // listener; this must not throw mid-teardown.
+    assert.doesNotThrow(() => project.off('own-role-change', noop))
+  })
+
+  restartServer(t, server, port1)
+  notifyCoreClientTransportReset(client)
+  assert.equal(closeCount, 1, 'close listener ran synchronously with reset')
+
+  // A second reset finds no open project clients; the closed wrapper's
+  // listeners must not fire again.
+  notifyCoreClientTransportReset(client)
+  assert.equal(closeCount, 1)
+})
+
 test('Stale project references behave like closed projects after reset', async (t) => {
   const { client, server, port1 } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
@@ -144,6 +186,25 @@ test('Stale project references behave like closed projects after reset', async (
   )
   // `close()` on a stale reference resolves like an already-closed project.
   await staleProject.close()
+
+  // Removing listeners from a stale reference is valid teardown (e.g. React
+  // effect cleanup) and must not throw; subscribing is still an error.
+  const noop = () => {}
+  assert.doesNotThrow(() => staleProject.off('close', noop))
+  assert.doesNotThrow(() => staleProject.removeListener('close', noop))
+  assert.doesNotThrow(() => staleProject.removeAllListeners())
+  assert.doesNotThrow(
+    () => staleProject.off('own-role-change', noop).off('close', noop),
+    'unsubscribe no-ops keep chaining semantics',
+  )
+  assert.throws(
+    () => staleProject.on('close', noop),
+    { code: ProjectClosedError.code },
+    'subscribe methods still throw on a stale reference',
+  )
+  assert.throws(() => staleProject.once('close', noop), {
+    code: ProjectClosedError.code,
+  })
 })
 
 test('getProject that is in flight during reset rejects, and a retry returns a working client', async (t) => {
@@ -192,9 +253,10 @@ test('Reset is a no-op after the client is closed', async (t) => {
   await closeComapeoCoreClient(client)
 
   assert.doesNotThrow(() => notifyCoreClientTransportReset(client))
+  assert.doesNotThrow(() => resubscribeCoreClient(client))
 })
 
-test('Services client reset rejects in-flight calls and replays subscriptions', async (t) => {
+test('Services client reset rejects in-flight calls; resubscribeServicesClient replays subscriptions', async (t) => {
   const { port1, port2 } = new MessageChannel()
   t.after(() => {
     port1.close()
@@ -238,6 +300,15 @@ test('Services client reset rejects in-flight calls and replays subscriptions', 
     code: TransportClosedError.code,
   })
 
+  // Reset alone does not replay subscriptions.
+  await client.mapServer.getBaseUrl()
+  newApi.emit('service-event', 'dropped')
+  await client.mapServer.getBaseUrl()
+  assert.deepEqual(received, [])
+
+  // Safe to call repeatedly: the server ignores duplicate subscriptions.
+  resubscribeServicesClient(client)
+  resubscribeServicesClient(client)
   // Round-trip barrier so the replayed subscribe has been processed.
   await client.mapServer.getBaseUrl()
   newApi.emit('service-event', 'payload')
@@ -245,4 +316,19 @@ test('Services client reset rejects in-flight calls and replays subscriptions', 
   await client.mapServer.getBaseUrl()
 
   assert.deepEqual(received, ['payload'])
+})
+
+test('Services client reset and resubscribe are no-ops after close', async (t) => {
+  const { port1, port2 } = new MessageChannel()
+  t.after(() => {
+    port1.close()
+    port2.close()
+  })
+
+  const client = createComapeoServicesClient(port2)
+  port2.start()
+  closeComapeoServicesClient(client)
+
+  assert.doesNotThrow(() => notifyServicesClientTransportReset(client))
+  assert.doesNotThrow(() => resubscribeServicesClient(client))
 })

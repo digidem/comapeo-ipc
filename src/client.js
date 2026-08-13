@@ -33,13 +33,24 @@ const EMITTER_METHODS = new Set([
   'listenerCount',
 ])
 
+// Removing a listener from a client that is already dead is correct teardown
+// behaviour (e.g. React effect cleanup running against a stale reference), so
+// unlike the other emitter methods these must not throw on a closed proxy.
+const EMITTER_UNSUBSCRIBE_METHODS = new Set([
+  'removeListener',
+  'off',
+  'removeAllListeners',
+])
+
 /**
  * Build the Proxy returned for a closed client/project reference. Method calls
  * (including nested namespaces such as `project.observation.*`) reject with
  * `makeError()`, keeping the `Promise`-returning contract callers expect.
  * EventEmitter methods are the exception: callers don't await them, so a
  * rejected promise would surface as an unhandled rejection — they throw
- * synchronously instead, at the call site.
+ * synchronously instead, at the call site. Unsubscribe methods are a further
+ * exception: they are no-ops that return the proxy for chaining, because
+ * removing a listener from a dead client is valid teardown, not a bug.
  *
  * @param {() => Error} makeError
  */
@@ -48,6 +59,9 @@ function createClosedProxy(makeError) {
   const handler = {
     get(_target, prop) {
       if (typeof prop === 'string' && EMITTER_METHODS.has(prop)) {
+        if (EMITTER_UNSUBSCRIBE_METHODS.has(prop)) {
+          return () => proxy
+        }
         return () => {
           throw makeError()
         }
@@ -61,7 +75,8 @@ function createClosedProxy(makeError) {
       return Promise.reject(makeError())
     },
   }
-  return new Proxy({}, handler)
+  const proxy = new Proxy({}, handler)
+  return proxy
 }
 
 /**
@@ -80,6 +95,7 @@ function createClosedProxy(makeError) {
 
 const CLOSE = Symbol('close')
 const TRANSPORT_RESET = Symbol('transportReset')
+const RESUBSCRIBE = Symbol('resubscribe')
 
 /**
  * @param {MessagePortLike} messagePort
@@ -145,12 +161,13 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     resetGeneration++
 
     // Fail in-flight calls fast with a distinguishable, retryable error
-    // instead of leaving them to hit the per-call timeout.
+    // instead of leaving them to hit the per-call timeout. Resubscription is
+    // deliberately NOT done here: at drop time the transport is down, and
+    // each ON frame written into it can nudge the native transport into
+    // retrying forever while the server stays down. The consumer calls
+    // `resubscribeCoreClient` once the transport is back up.
     createClient.rejectPending(managerClient, new TransportClosedError())
     createClient.rejectPending(projectRoutingClient, new TransportClosedError())
-    // The restarted server has lost every event subscription; replay them.
-    createClient.resubscribe(managerClient)
-    createClient.resubscribe(projectRoutingClient)
 
     // Project instance ids are minted by a counter that restarts with the
     // server, so a restarted server can mint an id equal to the one a cached
@@ -163,6 +180,15 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     }
     openProjectClients.clear()
     currentProjectClients.clear()
+  }
+
+  function handleResubscribe() {
+    // rpc-reflector's resubscribe is a no-op on a closed client, and the
+    // server ignores duplicate ON messages, so this is safe to call
+    // repeatedly and after close.
+    if (clientClosed) return
+    createClient.resubscribe(managerClient)
+    createClient.resubscribe(projectRoutingClient)
   }
 
   const client = new Proxy(managerClient, {
@@ -195,6 +221,10 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
 
       if (prop === TRANSPORT_RESET) {
         return handleTransportReset
+      }
+
+      if (prop === RESUBSCRIBE) {
+        return handleResubscribe
       }
 
       if (prop === 'getProject') {
@@ -307,6 +337,13 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
       // and `close()` on them resolves like an already-closed project.
       hardClose: (/** @type {Error} */ error) => {
         createClient.rejectPending(projectClient, error)
+        // Fire 'close' listeners (the app's teardown listeners and the
+        // cache-eviction listener below) before closing the client, matching
+        // what a server-initiated close delivers. Emitted before close so a
+        // `.off` called from inside a close listener hits a still-open
+        // client (a harmless OFF frame into a dead socket) rather than
+        // throwing.
+        createClient.emitLocal(projectClient, 'close')
         createClient.close(projectClient)
         projectChannel.close()
         closed = true
@@ -360,21 +397,25 @@ export async function closeComapeoCoreClient(client) {
 }
 
 /**
- * Notify the core client that the underlying transport dropped and has
- * reconnected to a restarted server (e.g. Android killed and restarted the
- * foreground service hosting the server). Call after the transport is back
- * up. This:
+ * Notify the core client that the underlying transport has dropped (e.g.
+ * Android killed the foreground service hosting the server). Call at drop
+ * time — the transport does not need to be back up. This:
  *
  * - rejects every call that was in flight with `TransportClosedError`
  *   (`code: 'RPC_TRANSPORT_CLOSED'`), so callers can fail fast and retry
  *   instead of waiting for the per-call timeout;
- * - re-sends event subscriptions for the manager, which the restarted server
- *   had lost;
- * - hard-closes every open project client and drops the project cache, so a
- *   later `getProject` builds a fresh wrapper against the new server. Stale
- *   project references held by the app behave like closed projects
- *   (`ProjectClosedError`). A `getProject` in flight during the reset
- *   rejects with `TransportClosedError`.
+ * - hard-closes every open project client (each fires its `'close'` event
+ *   locally, so app-held `once('close')` teardown listeners run) and drops
+ *   the project cache, so a later `getProject` builds a fresh wrapper
+ *   against the new server. Stale project references held by the app behave
+ *   like closed projects (`ProjectClosedError`), except that removing
+ *   listeners from them is a harmless no-op. A `getProject` in flight during
+ *   the reset rejects with `TransportClosedError`.
+ *
+ * This deliberately does NOT replay event subscriptions: writing into a
+ * still-down transport can keep nudging it into a hot retry loop. Once the
+ * transport has reconnected to the restarted server, call
+ * {@link resubscribeCoreClient} to restore subscriptions.
  *
  * No-op after `closeComapeoCoreClient`.
  *
@@ -384,6 +425,22 @@ export async function closeComapeoCoreClient(client) {
 export function notifyCoreClientTransportReset(client) {
   // @ts-expect-error
   return client[TRANSPORT_RESET]()
+}
+
+/**
+ * Re-send the core client's event subscriptions (manager events and project
+ * routing) after the transport has reconnected to a restarted server, which
+ * lost all subscription state. Call once the transport is back up, after
+ * having called `notifyCoreClientTransportReset` at drop time. Safe to call
+ * repeatedly (the server ignores duplicate subscriptions); no-op after
+ * `closeComapeoCoreClient`.
+ *
+ * @param {ComapeoCoreClientApi} client client created with `createComapeoCoreClient`
+ * @returns {void}
+ */
+export function resubscribeCoreClient(client) {
+  // @ts-expect-error
+  return client[RESUBSCRIBE]()
 }
 
 /**
@@ -419,16 +476,31 @@ export function closeComapeoServicesClient(servicesClient) {
 }
 
 /**
- * Notify the services client that the underlying transport dropped and has
- * reconnected to a restarted server: rejects every call that was in flight
- * with `TransportClosedError` (`code: 'RPC_TRANSPORT_CLOSED'`) and re-sends
- * event subscriptions the restarted server had lost. No-op after
- * `closeComapeoServicesClient`.
+ * Notify the services client that the underlying transport has dropped:
+ * rejects every call that was in flight with `TransportClosedError`
+ * (`code: 'RPC_TRANSPORT_CLOSED'`). Call at drop time. Like
+ * {@link notifyCoreClientTransportReset} this does not replay event
+ * subscriptions — call {@link resubscribeServicesClient} once the transport
+ * has reconnected. No-op after `closeComapeoServicesClient`.
  *
  * @param {ComapeoServicesClientApi} servicesClient client created with `createComapeoServicesClient`
  * @returns {void}
  */
 export function notifyServicesClientTransportReset(servicesClient) {
   createClient.rejectPending(servicesClient, new TransportClosedError())
+}
+
+/**
+ * Re-send the services client's event subscriptions after the transport has
+ * reconnected to a restarted server, which lost all subscription state. Call
+ * once the transport is back up, after having called
+ * `notifyServicesClientTransportReset` at drop time. Safe to call repeatedly
+ * (the server ignores duplicate subscriptions); no-op after
+ * `closeComapeoServicesClient`.
+ *
+ * @param {ComapeoServicesClientApi} servicesClient client created with `createComapeoServicesClient`
+ * @returns {void}
+ */
+export function resubscribeServicesClient(servicesClient) {
   createClient.resubscribe(servicesClient)
 }

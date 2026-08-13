@@ -2,9 +2,11 @@ export {
   createComapeoCoreClient,
   closeComapeoCoreClient,
   notifyCoreClientTransportReset,
+  resubscribeCoreClient,
   createComapeoServicesClient,
   closeComapeoServicesClient,
   notifyServicesClientTransportReset,
+  resubscribeServicesClient,
 } from './client.js'
 export {
   createComapeoCoreServer,

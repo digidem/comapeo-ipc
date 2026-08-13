@@ -52,7 +52,7 @@ test('Client listeners stop receiving events after removeListener', async (t) =>
   assert.equal(count, 1, 'no further events after removeListener')
 })
 
-test('EventEmitter methods throw synchronously after the project is closed', async (t) => {
+test('EventEmitter subscribe methods throw synchronously after the project is closed; unsubscribe methods are no-ops', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
@@ -60,13 +60,14 @@ test('EventEmitter methods throw synchronously after the project is closed', asy
   await project.close()
 
   // Emitter methods are not awaited by callers, so a rejected promise would
-  // surface as an unhandled rejection — they throw at the call site instead.
+  // surface as an unhandled rejection — subscribe methods throw at the call
+  // site instead. Unsubscribe methods are valid teardown on a closed
+  // reference (e.g. React effect cleanup), so they are no-ops.
   assert.throws(() => project.on('some-event', () => {}), {
     code: ProjectClosedError.code,
   })
-  assert.throws(() => project.removeListener('some-event', () => {}), {
-    code: ProjectClosedError.code,
-  })
+  assert.doesNotThrow(() => project.removeListener('some-event', () => {}))
+  assert.doesNotThrow(() => project.off('some-event', () => {}))
 })
 
 test('EventEmitter methods throw synchronously after the client is closed', async (t) => {
