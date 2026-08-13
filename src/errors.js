@@ -17,6 +17,20 @@ export const ProjectClosedError = createErrorClass({
 })
 
 /**
+ * Rejected client-side into calls that were in flight when the underlying
+ * transport dropped (e.g. the process hosting the server was killed and
+ * restarted). Distinguishable from a real failure or a timeout: the call
+ * never completed on the server's side of the connection, so a read is safe
+ * to retry once the transport has reconnected.
+ */
+export const TransportClosedError = createErrorClass({
+  code: 'RPC_TRANSPORT_CLOSED',
+  message:
+    'Transport closed: the connection to the server dropped while the call was in flight',
+  status: 503,
+})
+
+/**
  * Thrown client-side when a method is called after the CoMapeo core client
  * (the whole IPC client) has been closed via `closeComapeoCoreClient`.
  */

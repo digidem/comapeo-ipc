@@ -6,7 +6,11 @@ import {
   SERVICES_ID,
   SubChannel,
 } from './lib/sub-channel.js'
-import { ClientClosedError, ProjectClosedError } from './errors.js'
+import {
+  ClientClosedError,
+  ProjectClosedError,
+  TransportClosedError,
+} from './errors.js'
 
 /** @import { ClientApi, MessagePortLike } from 'rpc-reflector' */
 /** @import { MapeoProject, MapeoManager } from '@comapeo/core' */
@@ -75,6 +79,7 @@ function createClosedProxy(makeError) {
  * >} ComapeoCoreClientApi */
 
 const CLOSE = Symbol('close')
+const TRANSPORT_RESET = Symbol('transportReset')
 
 /**
  * @param {MessagePortLike} messagePort
@@ -108,6 +113,7 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
    * @type {Set<{
    *   client: ClientApi<MapeoProject>,
    *   channel: SubChannel,
+   *   hardClose: (error: Error) => void,
    * }>}
    */
   const openProjectClients = new Set()
@@ -128,6 +134,36 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
   // surface `ManagerClosedError` instead of rpc-reflector's `ChannelClosed`.
   let clientClosed = false
   const managerClosedProxy = createClosedProxy(() => new ClientClosedError())
+
+  // Bumped on every transport reset so a `getProject` whose routing response
+  // arrived just before the reset cannot cache a wrapper bound to the dead
+  // server (see `resolveProjectClient`).
+  let resetGeneration = 0
+
+  function handleTransportReset() {
+    if (clientClosed) return
+    resetGeneration++
+
+    // Fail in-flight calls fast with a distinguishable, retryable error
+    // instead of leaving them to hit the per-call timeout.
+    createClient.rejectPending(managerClient, new TransportClosedError())
+    createClient.rejectPending(projectRoutingClient, new TransportClosedError())
+    // The restarted server has lost every event subscription; replay them.
+    createClient.resubscribe(managerClient)
+    createClient.resubscribe(projectRoutingClient)
+
+    // Project instance ids are minted by a counter that restarts with the
+    // server, so a restarted server can mint an id equal to the one a cached
+    // wrapper is bound to — the instance-id currency check in
+    // `resolveProjectClient` could then falsely pass. Hard-close every
+    // wrapper and drop the cache so `getProject` always builds a fresh
+    // wrapper against the new server.
+    for (const entry of openProjectClients) {
+      entry.hardClose(new TransportClosedError())
+    }
+    openProjectClients.clear()
+    currentProjectClients.clear()
+  }
 
   const client = new Proxy(managerClient, {
     get(target, prop, receiver) {
@@ -155,6 +191,10 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
 
           clientClosed = true
         }
+      }
+
+      if (prop === TRANSPORT_RESET) {
+        return handleTransportReset
       }
 
       if (prop === 'getProject') {
@@ -205,8 +245,14 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
    * @returns {Promise<ClientApi<MapeoProject>>}
    */
   async function resolveProjectClient(projectPublicId) {
+    const generation = resetGeneration
     const instanceId =
       await projectRoutingClient.assertProjectExists(projectPublicId)
+
+    // A reset can land between the routing response arriving and this
+    // continuation running; a wrapper minted now would be bound to the dead
+    // server, so reject like any other call in flight during the reset.
+    if (generation !== resetGeneration) throw new TransportClosedError()
 
     const current = currentProjectClients.get(projectPublicId)
     if (current && current.instanceId === instanceId) return current.wrapper
@@ -232,9 +278,6 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     const projectClient = createClient(projectChannel, opts)
     projectChannel.start()
 
-    const registryEntry = { client: projectClient, channel: projectChannel }
-    openProjectClients.add(registryEntry)
-
     // Wrap projectClient to intercept `close`: after the wire close settles,
     // tear down the local client + channel — rejecting any in-flight calls.
     // Cache eviction is in the 'close' listener below, which also covers
@@ -254,6 +297,24 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     const closedProxy = createClosedProxy(() =>
       closed ? new ProjectClosedError() : new ClientClosedError(),
     )
+
+    const registryEntry = {
+      client: projectClient,
+      channel: projectChannel,
+      // Local-only teardown for a transport reset: the server this instance
+      // belonged to is gone, so there is no wire close to await. Stale
+      // references then behave like a closed project (`ProjectClosedError`),
+      // and `close()` on them resolves like an already-closed project.
+      hardClose: (/** @type {Error} */ error) => {
+        createClient.rejectPending(projectClient, error)
+        createClient.close(projectClient)
+        projectChannel.close()
+        closed = true
+        closePromise = Promise.resolve()
+      },
+    }
+    openProjectClients.add(registryEntry)
+
     const wrappedProjectClient = new Proxy(projectClient, {
       get(target, prop, receiver) {
         if (prop === 'close') {
@@ -299,6 +360,33 @@ export async function closeComapeoCoreClient(client) {
 }
 
 /**
+ * Notify the core client that the underlying transport dropped and has
+ * reconnected to a restarted server (e.g. Android killed and restarted the
+ * foreground service hosting the server). Call after the transport is back
+ * up. This:
+ *
+ * - rejects every call that was in flight with `TransportClosedError`
+ *   (`code: 'RPC_TRANSPORT_CLOSED'`), so callers can fail fast and retry
+ *   instead of waiting for the per-call timeout;
+ * - re-sends event subscriptions for the manager, which the restarted server
+ *   had lost;
+ * - hard-closes every open project client and drops the project cache, so a
+ *   later `getProject` builds a fresh wrapper against the new server. Stale
+ *   project references held by the app behave like closed projects
+ *   (`ProjectClosedError`). A `getProject` in flight during the reset
+ *   rejects with `TransportClosedError`.
+ *
+ * No-op after `closeComapeoCoreClient`.
+ *
+ * @param {ComapeoCoreClientApi} client client created with `createComapeoCoreClient`
+ * @returns {void}
+ */
+export function notifyCoreClientTransportReset(client) {
+  // @ts-expect-error
+  return client[TRANSPORT_RESET]()
+}
+
+/**
  * @typedef {ClientApi<ComapeoServicesApi>} ComapeoServicesClientApi
  */
 
@@ -328,4 +416,19 @@ export function createComapeoServicesClient(messagePort, opts = {}) {
  */
 export function closeComapeoServicesClient(servicesClient) {
   createClient.close(servicesClient)
+}
+
+/**
+ * Notify the services client that the underlying transport dropped and has
+ * reconnected to a restarted server: rejects every call that was in flight
+ * with `TransportClosedError` (`code: 'RPC_TRANSPORT_CLOSED'`) and re-sends
+ * event subscriptions the restarted server had lost. No-op after
+ * `closeComapeoServicesClient`.
+ *
+ * @param {ComapeoServicesClientApi} servicesClient client created with `createComapeoServicesClient`
+ * @returns {void}
+ */
+export function notifyServicesClientTransportReset(servicesClient) {
+  createClient.rejectPending(servicesClient, new TransportClosedError())
+  createClient.resubscribe(servicesClient)
 }
