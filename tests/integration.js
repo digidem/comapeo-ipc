@@ -13,7 +13,6 @@ import {
   closeComapeoCoreClient,
 } from '../src/client.js'
 import { createComapeoCoreServer } from '../src/server.js'
-import { ProjectClosedError } from '../src/errors.js'
 
 const require = createRequire(import.meta.url)
 
@@ -60,8 +59,6 @@ test('end-to-end against a real MapeoManager', async (t) => {
   })
   const readBack = await project.observation.getByDocId(obs.docId)
   assert.equal(readBack.docId, obs.docId)
-
-  await project.close()
 })
 
 /**
@@ -69,23 +66,30 @@ test('end-to-end against a real MapeoManager', async (t) => {
  */
 test('handle manager initiating the close', async (t) => {
   const { server, client, manager } = setup(t)
-  // Manager methods round-trip.
 
   const projectId = await client.createProject({ name: 'mapeo' })
   assert.ok(projectId)
 
   const clientProject = await client.getProject(projectId)
+  const obs = await clientProject.observation.create({
+    schemaName: 'observation',
+    attachments: [],
+    tags: {},
+  })
   const rawProject = await manager.getProject(projectId)
 
-  // This simulates the project being closed through other means like leaveProject
+  // A server-side close the client never hears about (resource policy, or
+  // core's addProject closing a stale instance on re-invite). The client's
+  // reference must keep working against the transparently re-opened
+  // instance — with the real MapeoProject this proves a fresh instance can
+  // serve the same channel and reads round-trip.
   await rawProject.close()
 
-  await assert.rejects(() => clientProject.$getProjectSettings(), {
-    code: ProjectClosedError.code,
-  })
+  const readBack = await clientProject.observation.getByDocId(obs.docId)
+  assert.equal(readBack.docId, obs.docId)
 
   const reOpened = await client.getProject(projectId)
-
+  assert.equal(reOpened, clientProject, 'project references are permanent')
   await reOpened.$getProjectSettings()
 })
 

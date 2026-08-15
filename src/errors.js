@@ -6,13 +6,14 @@ export {
 } from 'rpc-reflector/errors.js'
 
 /**
- * Thrown server-side when a stale call reaches a project instance that has
- * already been closed. Rides the standard rpc-reflector error response back
- * to the client.
+ * Thrown server-side when a call arrives for a project this device has left
+ * (`manager.leaveProject`). Left projects are never re-opened by the server;
+ * re-joining via an invite (`manager.addProject`) makes the project usable
+ * again. Rides the standard rpc-reflector error response back to the client.
  */
-export const ProjectClosedError = createErrorClass({
-  code: 'PROJECT_CLOSED',
-  message: 'Project is closed',
+export const ProjectLeftError = createErrorClass({
+  code: 'PROJECT_LEFT',
+  message: 'This device has left the project',
   status: 410,
 })
 

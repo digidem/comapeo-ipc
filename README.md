@@ -76,17 +76,20 @@ The wrappers never close or destroy the `messagePort` itself — that is the cal
 
 `client.getProject(id)` resolves with a client that reflects the `MapeoProject` API, including nested namespaces such as `project.observation.*`.
 
-- **Deduplicated.** Concurrent or repeated `getProject(id)` calls for an open project resolve to the same reference and open the project only once on the server.
+- **Deduplicated.** Concurrent or repeated `getProject(id)` calls resolve to the same reference — project references are permanent for the lifetime of the client.
 - **Missing projects.** If the project does not exist, `getProject(id)` rejects with `NotFoundError` (from `@comapeo/core`). A failed lookup is not cached, so a later call for an id that does exist still succeeds.
-- **Isolation.** Closing one project does not affect other open projects.
+- **Left projects.** If this device has left the project (`manager.leaveProject`), `getProject(id)` — and every method call on an already-held reference — rejects with [`ProjectLeftError`](#errors) until the project is re-joined via an invite, after which the same reference works again.
 
 ### Lifecycle
 
-- `project.close()` closes the project on the server and tears down its channel. It is idempotent — repeated calls resolve like the first.
-- After a project is closed — via `project.close()` **or** by the server closing it — every method on that reference rejects with [`ProjectClosedError`](#errors).
-- A project can be re-opened: after closing, `getProject(id)` opens a fresh instance and returns a new reference. Calls on the old, closed reference never reach the re-opened project — they keep rejecting.
-- `closeComapeoCoreClient(client)` tears down the manager, the project-routing channel, and every open project reference. After this, all calls — including `getProject(id)` — reject with [`ClientClosedError`](#errors). (The services client is independent; close it separately with [`closeComapeoServicesClient`](#closecomapeoservicesclientservicesclient-clientapicomapeoservicesapi-void).)
-- Calls already in flight when a close happens reject with [`RpcChannelClosedError`](#errors); they are not re-routed.
+Project instance lifecycle is owned entirely by the server. The client cannot close a project (the reflected surface has no `project.close()`), and a project reference never goes stale:
+
+- The server may close a project instance at any time (resource management, `addProject` re-joining a previously-left project, a server restart). The next call on that project's channel transparently re-opens it — callers never observe the cycle.
+- Event subscriptions survive server-side close/re-open: the server records each project's subscribed events and replays them into the fresh instance before serving buffered calls.
+- The one exception is a left project, which is never re-opened — see [`ProjectLeftError`](#errors).
+- A `leaveProject` call routed through this server also closes the stale instance `@comapeo/core` leaves cached after leaving (core only cleans that up itself inside `addProject`).
+- `closeComapeoCoreClient(client)` tears down the manager, the project-routing channel, and every project reference. After this, all calls — including `getProject(id)` — reject with [`ClientClosedError`](#errors). (The services client is independent; close it separately with [`closeComapeoServicesClient`](#closecomapeoservicesclientservicesclient-clientapicomapeoservicesapi-void).)
+- Calls already in flight when the client closes reject with [`RpcChannelClosedError`](#errors); they are not re-routed.
 
 ### Events
 
@@ -98,19 +101,17 @@ Error classes are available from the `@comapeo/ipc/errors.js` entrypoint:
 
 ```ts
 import {
-  ProjectClosedError,
+  ProjectLeftError,
   ClientClosedError,
   RpcChannelClosedError,
   RpcTimeoutError,
 } from '@comapeo/ipc/errors.js'
 ```
 
-After a reference is closed, calls made on it reject with a descriptive error:
-
-- **`ProjectClosedError`** (`code: 'PROJECT_CLOSED'`) — a method (including nested namespaces such as `project.observation.*`) was called on a project reference after that project was closed, either via `await project.close()` or by the server closing the project. A re-opened reference from a fresh `client.getProject(id)` is unaffected.
+- **`ProjectLeftError`** (`code: 'PROJECT_LEFT'`) — a method (including nested namespaces such as `project.observation.*`) or `getProject(id)` was called for a project this device has left. Left projects are never transparently re-opened; re-joining via an invite makes the same reference usable again.
 - **`ClientClosedError`** (`code: 'CLIENT_CLOSED'`) — a method was called on the CoMapeo client, or on any project reference, after the whole client was torn down with [`closeComapeoCoreClient`](#closecomapeocoreclientclient-clientapimapeomanager-promisevoid). This includes `getProject(id)`, which after close rejects with `ClientClosedError` rather than returning a reference — whether or not that project was fetched earlier.
 
-RPC methods return a rejected `Promise` carrying the error, so failures surface through normal `await`/`.catch()` handling. The exception is the event-emitter methods (`on`, `once`, `off`, `removeListener`, `emit`, etc.), which return synchronously rather than a promise — after close these **throw** the same error synchronously instead, so it surfaces at the call site rather than as an unhandled rejection.
+RPC methods return a rejected `Promise` carrying the error, so failures surface through normal `await`/`.catch()` handling. The exception is the event-emitter methods, which return synchronously rather than a promise — after the client is closed, subscribe methods (`on`, `once`, `addListener`, and `emit`/introspection) **throw** `ClientClosedError` synchronously so the failure surfaces at the call site rather than as an unhandled rejection, while unsubscribe methods (`off`, `removeListener`, `removeAllListeners`) are safe no-ops — removing a listener from a dead client is correct teardown.
 
 Calls that were already in flight when the close happened are not re-routed: they reject with **`RpcChannelClosedError`** as the underlying channel tears down. `RpcTimeoutError` is thrown when a call exceeds the `opts.timeout` passed to [`createComapeoCoreClient`](#createcomapeocoreclientmessageport-messageportlike-opts--timeout-number--clientapimapeomanager).
 
