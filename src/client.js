@@ -7,7 +7,7 @@ import {
   SERVICES_ID,
   SubChannel,
 } from './lib/sub-channel.js'
-import { ClientClosedError } from './errors.js'
+import { ClientClosedError, TransportClosedError } from './errors.js'
 
 /** @import { ClientApi, MessagePortLike } from 'rpc-reflector' */
 /** @import { MapeoProject, MapeoManager } from '@comapeo/core' */
@@ -86,6 +86,23 @@ function createClosedProxy(makeError) {
  * >} ComapeoCoreClientApi */
 
 const CLOSE = Symbol('close')
+const TRANSPORT_RESET = Symbol('transportReset')
+const RESUBSCRIBE = Symbol('resubscribe')
+
+/**
+ * `createClient.rejectPending` / `createClient.resubscribe` ship in
+ * rpc-reflector >= 4.4. Fail with a clear message rather than a bare
+ * TypeError when the installed version predates them.
+ *
+ * @param {'rejectPending' | 'resubscribe'} name
+ */
+function assertResetApi(name) {
+  if (typeof (/** @type {any} */ (createClient)[name]) !== 'function') {
+    throw new Error(
+      `createClient.${name} is unavailable — transport-reset support requires rpc-reflector >= 4.4`,
+    )
+  }
+}
 
 /**
  * Create the client side of `createComapeoCoreServer`.
@@ -145,8 +162,46 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
   let clientClosed = false
   const clientClosedProxy = createClosedProxy(() => new ClientClosedError())
 
+  function handleTransportReset() {
+    if (clientClosed) return
+    assertResetApi('rejectPending')
+    // Fail in-flight calls fast with a distinguishable, retryable error
+    // instead of leaving them to hit the per-call timeout. Resubscription is
+    // deliberately NOT done here: at drop time the transport is down, and
+    // each ON frame written into it can nudge the native transport into
+    // retrying forever while the server stays down. The consumer calls
+    // `resubscribeCoreClient` once the transport is back up. Project
+    // references stay valid: their channels are keyed by project id, which
+    // a restarted server serves identically.
+    createClient.rejectPending(managerClient, new TransportClosedError())
+    createClient.rejectPending(projectRoutingClient, new TransportClosedError())
+    for (const entry of openProjectClients) {
+      createClient.rejectPending(entry.client, new TransportClosedError())
+    }
+  }
+
+  function handleResubscribe() {
+    if (clientClosed) return
+    assertResetApi('resubscribe')
+    // Safe to call repeatedly: the server ignores duplicate ON messages. A
+    // replayed project subscription also re-opens that project server-side —
+    // an active listener is an expression of interest.
+    createClient.resubscribe(managerClient)
+    for (const entry of openProjectClients) {
+      createClient.resubscribe(entry.client)
+    }
+  }
+
   const client = new Proxy(managerClient, {
     get(target, prop, receiver) {
+      if (prop === TRANSPORT_RESET) {
+        return handleTransportReset
+      }
+
+      if (prop === RESUBSCRIBE) {
+        return handleResubscribe
+      }
+
       if (prop === CLOSE) {
         return async () => {
           managerChannel.close()
@@ -273,6 +328,39 @@ export async function closeComapeoCoreClient(client) {
 }
 
 /**
+ * Notify the client that its transport to the server has dropped (e.g. the
+ * process hosting the server died): every in-flight call — manager, project
+ * routing, and per-project — rejects immediately with `TransportClosedError`
+ * instead of waiting out its timeout. The client remains fully usable;
+ * project references stay valid and serve the restarted server once the
+ * transport reconnects. Safe to call repeatedly; no-op after
+ * `closeComapeoCoreClient`.
+ *
+ * Deliberately does NOT replay event subscriptions — call
+ * {@link resubscribeCoreClient} once the transport is connected again.
+ *
+ * @param {ComapeoCoreClientApi} client client created with `createComapeoCoreClient`
+ */
+export function notifyCoreClientTransportReset(client) {
+  // @ts-expect-error
+  client[TRANSPORT_RESET]()
+}
+
+/**
+ * Re-send every event subscription (manager and per-project) to the server.
+ * Call after the transport to a restarted server is connected again — the
+ * fresh server has no subscription state until then. Safe to call
+ * repeatedly (the server ignores duplicate subscriptions); no-op after
+ * `closeComapeoCoreClient`.
+ *
+ * @param {ComapeoCoreClientApi} client client created with `createComapeoCoreClient`
+ */
+export function resubscribeCoreClient(client) {
+  // @ts-expect-error
+  client[RESUBSCRIBE]()
+}
+
+/**
  * @typedef {ClientApi<ComapeoServicesApi>} ComapeoServicesClientApi
  */
 
@@ -302,4 +390,28 @@ export function createComapeoServicesClient(messagePort, opts = {}) {
  */
 export function closeComapeoServicesClient(servicesClient) {
   createClient.close(servicesClient)
+}
+
+/**
+ * Services-client counterpart of {@link notifyCoreClientTransportReset}:
+ * reject the services client's in-flight calls with `TransportClosedError`.
+ * Safe to call repeatedly and after `closeComapeoServicesClient` (no-op).
+ *
+ * @param {ComapeoServicesClientApi} servicesClient client created with `createComapeoServicesClient`
+ */
+export function notifyServicesClientTransportReset(servicesClient) {
+  assertResetApi('rejectPending')
+  createClient.rejectPending(servicesClient, new TransportClosedError())
+}
+
+/**
+ * Services-client counterpart of {@link resubscribeCoreClient}: re-send the
+ * services client's event subscriptions once the transport is back up. Safe
+ * to call repeatedly and after `closeComapeoServicesClient` (no-op).
+ *
+ * @param {ComapeoServicesClientApi} servicesClient client created with `createComapeoServicesClient`
+ */
+export function resubscribeServicesClient(servicesClient) {
+  assertResetApi('resubscribe')
+  createClient.resubscribe(servicesClient)
 }

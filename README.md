@@ -91,6 +91,15 @@ Project instance lifecycle is owned entirely by the server. The client cannot cl
 - `closeComapeoCoreClient(client)` tears down the manager, the project-routing channel, and every project reference. After this, all calls — including `getProject(id)` — reject with [`ClientClosedError`](#errors). (The services client is independent; close it separately with [`closeComapeoServicesClient`](#closecomapeoservicesclientservicesclient-clientapicomapeoservicesapi-void).)
 - Calls already in flight when the client closes reject with [`RpcChannelClosedError`](#errors); they are not re-routed.
 
+### Transport reset
+
+When the process hosting the server dies and restarts while the client stays alive (e.g. Android's foreground service being killed), the transport owner should drive a two-phase recovery:
+
+- At drop time, call `notifyCoreClientTransportReset(client)` (and `notifyServicesClientTransportReset(servicesClient)`): every in-flight call rejects immediately with [`TransportClosedError`](#errors) (`code: 'RPC_TRANSPORT_CLOSED'`) instead of waiting out its timeout. Reads are safe to retry once the transport reconnects; whether to replay a mutation is the caller's judgement — nothing is replayed automatically.
+- Once the transport is connected to the restarted server, call `resubscribeCoreClient(client)` (and `resubscribeServicesClient(servicesClient)`): every event subscription — manager and per-project — is re-sent, since the fresh server has no subscription state. Resubscription is deliberately not done at drop time: ON frames written into a down transport can keep nudging it into reconnect attempts while the server stays down.
+
+Project references need no recovery: their channels are keyed by project id, which a restarted server serves identically — the next call transparently re-opens the project. Both functions are safe to call repeatedly and are no-ops after the client is closed. Requires rpc-reflector >= 4.4.
+
 ### Events
 
 The client reflects the `EventEmitter` interface of the manager and of each project. `client.on(event, listener)` forwards events emitted on the server across the channel; `removeListener` / `off` stop the forwarding. After a reference is closed these emitter methods behave differently — see [Errors](#errors).
