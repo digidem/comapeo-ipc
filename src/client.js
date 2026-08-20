@@ -7,7 +7,7 @@ import {
   SERVICES_ID,
   SubChannel,
 } from './lib/sub-channel.js'
-import { ClientClosedError } from './errors.js'
+import { ClientClosedError, RpcChannelClosedError } from './errors.js'
 
 /** @import { ClientApi, MessagePortLike } from 'rpc-reflector' */
 /** @import { MapeoProject, MapeoManager } from '@comapeo/core' */
@@ -86,6 +86,8 @@ function createClosedProxy(makeError) {
  * >} ComapeoCoreClientApi */
 
 const CLOSE = Symbol('close')
+const TRANSPORT_RESET = Symbol('transportReset')
+const RESUBSCRIBE = Symbol('resubscribe')
 
 /**
  * Create the client side of `createComapeoCoreServer`.
@@ -145,8 +147,47 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
   let clientClosed = false
   const clientClosedProxy = createClosedProxy(() => new ClientClosedError())
 
+  function handleTransportReset() {
+    if (clientClosed) return
+    // Fail in-flight calls fast with the channel-closed error instead of
+    // leaving them to hit the per-call timeout. Resubscription is
+    // deliberately NOT done here: at drop time the transport is down, and
+    // each ON frame written into it can nudge the native transport into
+    // retrying forever while the server stays down — the consumer calls
+    // `resubscribe` once the transport is back up. Project references stay
+    // valid: their channels are keyed by project id, which a restarted
+    // server serves identically.
+    createClient.rejectPending(managerClient, new RpcChannelClosedError())
+    createClient.rejectPending(
+      projectRoutingClient,
+      new RpcChannelClosedError(),
+    )
+    for (const entry of openProjectClients) {
+      createClient.rejectPending(entry.client, new RpcChannelClosedError())
+    }
+  }
+
+  function handleResubscribe() {
+    if (clientClosed) return
+    // Safe to call repeatedly: the server ignores duplicate ON messages. A
+    // replayed project subscription also re-opens that project server-side —
+    // an active listener is an expression of interest.
+    createClient.resubscribe(managerClient)
+    for (const entry of openProjectClients) {
+      createClient.resubscribe(entry.client)
+    }
+  }
+
   const client = new Proxy(managerClient, {
     get(target, prop, receiver) {
+      // Resolved ahead of the closed check: both are safe no-ops after close.
+      if (prop === TRANSPORT_RESET) {
+        return handleTransportReset
+      }
+      if (prop === RESUBSCRIBE) {
+        return handleResubscribe
+      }
+
       if (prop === CLOSE) {
         return async () => {
           managerChannel.close()
@@ -275,6 +316,55 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
 export async function closeComapeoCoreClient(client) {
   // @ts-expect-error
   return client[CLOSE]()
+}
+
+/**
+ * Notify a client that its transport to the server has dropped (e.g. the
+ * process hosting the server died): every in-flight call rejects immediately
+ * with rpc-reflector's `ChannelClosedError` (`code: 'RPC_CHANNEL_CLOSED'`,
+ * re-exported as `RpcChannelClosedError`) instead of waiting out its
+ * timeout. Accepts a client from `createComapeoCoreClient` (rejecting the
+ * manager, project-routing, and every project reference's in-flight calls)
+ * or from `createComapeoServicesClient`. The client remains fully usable;
+ * project references stay valid and serve the restarted server once the
+ * transport reconnects. Safe to call repeatedly and on a closed client
+ * (no-op).
+ *
+ * Two-phase rule: call this at drop time; deliberately do NOT replay event
+ * subscriptions until the transport is connected to the restarted server —
+ * then call {@link resubscribe}. ON frames written into a down transport can
+ * keep nudging it into reconnect attempts while the server stays down.
+ *
+ * @param {ComapeoCoreClientApi | ComapeoServicesClientApi} client
+ */
+export function notifyTransportReset(client) {
+  const reset = /** @type {any} */ (client)[TRANSPORT_RESET]
+  if (typeof reset === 'function') {
+    reset()
+    return
+  }
+  // A services client is a bare rpc-reflector client.
+  createClient.rejectPending(client, new RpcChannelClosedError())
+}
+
+/**
+ * Re-send every event subscription to the server — for a core client the
+ * manager's and every project reference's (a replayed project subscription
+ * also transparently re-opens that project server-side). Call once the
+ * transport to a restarted server is connected again — the fresh server has
+ * no subscription state until then; see the two-phase rule on
+ * {@link notifyTransportReset}. Safe to call repeatedly (the server ignores
+ * duplicate subscriptions) and on a closed client (no-op).
+ *
+ * @param {ComapeoCoreClientApi | ComapeoServicesClientApi} client
+ */
+export function resubscribe(client) {
+  const replay = /** @type {any} */ (client)[RESUBSCRIBE]
+  if (typeof replay === 'function') {
+    replay()
+    return
+  }
+  createClient.resubscribe(client)
 }
 
 /**

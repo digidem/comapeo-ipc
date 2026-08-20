@@ -3,6 +3,8 @@ export {
   closeComapeoCoreClient,
   createComapeoServicesClient,
   closeComapeoServicesClient,
+  notifyTransportReset,
+  resubscribe,
 } from './client.js'
 export {
   createComapeoCoreServer,
