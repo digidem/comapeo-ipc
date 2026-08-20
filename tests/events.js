@@ -83,11 +83,10 @@ test('Project events are forwarded to client listeners', async (t) => {
   assert.equal(await deferred.promise, 'hello')
 })
 
-// The load-bearing test for server-owned lifecycle: rpc-reflector's
-// server-side subscriptions die with each per-instance server, so the IPC
-// server must replay the client's subscriptions into the fresh instance when
-// it re-opens — client listeners survive a close/re-open they never hear
-// about.
+// The load-bearing test for server-owned lifecycle: the server-side
+// subscriptions must outlive the instance they were attached to and be
+// replayed into the fresh instance when it re-opens — client listeners
+// survive a close/re-open they never hear about.
 test('Project event subscriptions survive a server-side close and re-open', async (t) => {
   const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
@@ -105,7 +104,7 @@ test('Project event subscriptions survive a server-side close and re-open', asyn
 
   await firstInstance.close()
 
-  // Re-open via any call; the subscription tape must be replayed before the
+  // Re-open via any call; the subscriptions must be re-attached before the
   // buffered call is dispatched.
   await project.$getProjectSettings()
 

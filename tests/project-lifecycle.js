@@ -214,8 +214,8 @@ test('Left project without a prior reference: getProject rejects with ProjectLef
 // Cycling a project open/closed must not accumulate instances in the IPC
 // layer's bookkeeping. The fake manager releases its instance on close, so
 // any instance still reachable after a cycle is being retained by the IPC
-// layer itself (the host must drop its server + project references when the
-// instance closes; the subscription tape holds no instance references).
+// layer itself (the host detaches rpc-reflector's handler when the instance
+// closes; the subscription registry holds no instance references).
 //
 // Runs only when `global.gc` is available (npm test passes --expose-gc).
 test('Repeated server-side close/re-open cycles do not retain prior instances', async (t) => {
@@ -286,8 +286,8 @@ test('Method calls on a never-validated reference to an unknown project reject',
 
   // Bypass getProject's existence check by writing a request frame straight
   // onto an unknown project's channel — this is what a desynced or misbehaving
-  // client would produce. The server must answer with an error response (via
-  // its transient stub), not leave the call to time out.
+  // client would produce. The server must answer with an error response (the
+  // handler factory's rejection), not leave the call to time out.
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
   await project.$getProjectSettings()
@@ -305,10 +305,9 @@ test('Method calls on a never-validated reference to an unknown project reject',
   assert.equal(settings.name, 'mapeo')
 })
 
-// The project channel's rpc handler is a facade that delegates to whichever
-// instance is live, so a bad method path is resolved against the instance at
-// call time. It must fail the same way it did when the instance itself was
-// the handler.
+// The project channel's rpc handler is bound late to whichever instance is
+// live, so a bad method path is resolved against the instance at call time.
+// It must fail the same way it did when the instance was bound statically.
 test('Calling a method that does not exist rejects with a ReferenceError', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })

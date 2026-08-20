@@ -1,4 +1,3 @@
-import { EventEmitter } from 'events'
 import { createServer } from 'rpc-reflector/server.js'
 import {
   COMAPEO_PREFIX,
@@ -22,9 +21,11 @@ function noop() {}
  * Project instance lifecycle is fully owned by this server: each project has
  * one channel, keyed by its public id, that is stable across close/re-open
  * cycles. Behind that channel sits a single long-lived rpc-reflector server
- * whose handler is a facade (see {@link ProjectHost}) that delegates to
- * whichever `MapeoProject` instance is live, opening one on demand. Clients
- * never see instance identity and cannot close projects.
+ * created with a handler *factory* (see {@link createProjectHost}):
+ * rpc-reflector binds a live `MapeoProject` instance lazily, keeps client
+ * subscriptions across instance changes, and re-attaches them to each fresh
+ * instance before serving any call against it. Clients never see instance
+ * identity and cannot close projects.
  *
  * The one thing the server will not transparently re-open is a project this
  * device has left: calls to a left project reject with `ProjectLeftError`
@@ -56,7 +57,7 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
   function getOrCreateHost(projectPublicId) {
     let host = projectHosts.get(projectPublicId)
     if (!host) {
-      host = new ProjectHost({ manager, messagePort, projectPublicId, opts })
+      host = createProjectHost({ manager, messagePort, projectPublicId, opts })
       projectHosts.set(projectPublicId, host)
     }
     return host
@@ -65,9 +66,13 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
   /**
    * Close the stale instance core leaves cached after `leaveProject` (core
    * opens the project to leave it, guts it, and keeps it in its cache; only
-   * `addProject` on re-invite cleans it up). Also returns the project's host
-   * to dormant via the instance's `close` event, so the next call hits the
+   * `addProject` on re-invite cleans it up). The instance's `close` event
+   * also detaches the project host's handler, so the next call hits the
    * left-project guard instead of the gutted instance.
+   *
+   * Interim, paired with the left-project guard in {@link createProjectHost}:
+   * both go away together once core ships a typed PROJECT_LEFT error
+   * (digidem/comapeo-core#1313).
    *
    * @param {string} projectPublicId
    */
@@ -115,7 +120,8 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
   }
 
   const projectRoutingApi = new ProjectRoutingApi({
-    ensureProject: (projectPublicId) => getOrCreateHost(projectPublicId).open(),
+    ensureProject: (projectPublicId) =>
+      getOrCreateHost(projectPublicId).ensureHandler(),
   })
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
@@ -198,425 +204,62 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
   }
 }
 
-// These names are answered by the facade itself rather than delegated, so a
-// project method sharing one would be shadowed — harmless, because
-// rpc-reflector's client handles `prop in EventEmitter.prototype` locally and
-// never sends such a call over the wire either way.
-//
-// EventEmitter methods that change which listeners are registered. After any
-// of them the live instance's listeners are re-synced from the facade's own
-// registry.
-const EMITTER_MUTATORS = new Set([
-  'addListener',
-  'on',
-  'once',
-  'prependListener',
-  'prependOnceListener',
-  'removeListener',
-  'off',
-  'removeAllListeners',
-])
-
-// The subset of the above that expresses interest in events, and so wakes a
-// dormant project. Unsubscribing alone is never a reason to open one.
-const EMITTER_SUBSCRIBERS = new Set([
-  'addListener',
-  'on',
-  'once',
-  'prependListener',
-  'prependOnceListener',
-])
-
-// Read-only EventEmitter methods, answered from the facade's registry.
-const EMITTER_READERS = new Set([
-  'listeners',
-  'rawListeners',
-  'listenerCount',
-  'eventNames',
-  'setMaxListeners',
-  'getMaxListeners',
-  'emit',
-])
-
 /**
- * Build the rpc-reflector handler for a project channel: one stable object
- * that outlives every `MapeoProject` instance served behind it.
- *
- * rpc-reflector asks only two things of a handler, both plain language-level
- * contracts rather than anything about its wire format: it *applies* method
- * paths to it (its client sends a request from a proxy apply trap, never from
- * a property read, so every request is a method call), and it *subscribes* to
- * it via `getNestedEventEmitter`, which walks the same path and requires an
- * `instanceof EventEmitter` at the end. So each node of the facade is a proxy
- * over a function — callable, so it can be a method; indexable, so it can be a
- * namespace; and reporting `EventEmitter.prototype`, so it can be subscribed
- * to.
- *
- * @param {object} owner
- * @param {(propArray: string[], args: ArrayLike<unknown>) => Promise<unknown>} owner.apply
- *   Delegate a method call to the live instance, opening one if needed.
- * @param {(propArray: string[]) => EventEmitter} owner.emitterFor
- *   The listener registry for a path; holds rpc-reflector's forwarding
- *   listeners across instances.
- * @param {(propArray: string[], opts: { wake: boolean }) => void} owner.onSubscriptionChange
+ * @typedef {object} ProjectHost
+ * @property {SubChannel} channel
+ * @property {() => Promise<void>} ensureHandler
+ * @property {() => void} close
  */
-function createProjectFacade(owner) {
-  /**
-   * @param {string[]} propArray
-   * @param {object | Function} target
-   * @returns {any}
-   */
-  function node(propArray, target) {
-    /** @type {any} */
-    const proxy = new Proxy(target, {
-      get(_target, prop) {
-        // Symbols are never part of a reflected path, and a `then` node would
-        // make the facade thenable to anything that awaits it.
-        if (typeof prop !== 'string' || prop === 'then') return undefined
-
-        if (EMITTER_MUTATORS.has(prop) || EMITTER_READERS.has(prop)) {
-          return (/** @type {any[]} */ ...args) => {
-            const emitter = /** @type {any} */ (owner.emitterFor(propArray))
-            const result = Reflect.apply(emitter[prop], emitter, args)
-            if (EMITTER_MUTATORS.has(prop)) {
-              owner.onSubscriptionChange(propArray, {
-                wake: EMITTER_SUBSCRIBERS.has(prop),
-              })
-            }
-            // Keep EventEmitter's chainable contract pointing at the facade.
-            return result === emitter ? proxy : result
-          }
-        }
-
-        return node(propArray.concat(prop), function () {})
-      },
-      // Any path may exist; whether it really does is settled against the live
-      // instance when the call is delegated.
-      has() {
-        return true
-      },
-      getPrototypeOf() {
-        return EventEmitter.prototype
-      },
-      apply(_target, _thisArg, args) {
-        return owner.apply(propArray, args)
-      },
-    })
-    return proxy
-  }
-
-  // Object target at the root: rpc-reflector asserts `typeof handler ===
-  // 'object'`.
-  return node([], {})
-}
-
-/**
- * Walk a prop path on a live instance, raising the same errors rpc-reflector
- * does when it resolves a path on a handler, so a bad path fails the way it
- * did when the instance itself was the handler.
- *
- * @param {any} target
- * @param {string[]} propArray
- */
-function walkPath(target, propArray) {
-  let nested = target
-  for (const propertyKey of propArray) {
-    if (nested === null || nested === undefined) {
-      throw new TypeError(`Cannot read property '${propertyKey}' of ${nested}`)
-    }
-    if (!Reflect.has(Object(nested), propertyKey)) {
-      throw new ReferenceError(`${propertyKey} is not defined`)
-    }
-    nested = nested[propertyKey]
-  }
-  return nested
-}
-
-/**
- * Apply a method path to a live instance.
- *
- * @param {any} target
- * @param {string[]} propArray
- * @param {ArrayLike<unknown>} args
- */
-function applyPath(target, propArray, args) {
-  const propertyKey = propArray[propArray.length - 1]
-  // rpc-reflector validates that a request carries a non-empty prop array.
-  if (propertyKey === undefined) {
-    throw new TypeError('[target] is not a function')
-  }
-  const nested = walkPath(target, propArray.slice(0, -1))
-  if (nested === null || nested === undefined) {
-    throw new TypeError(`Cannot read property '${propertyKey}' of ${nested}`)
-  }
-  if (typeof nested[propertyKey] !== 'function') {
-    throw new ReferenceError(`${propertyKey} is not defined`)
-  }
-  return Reflect.apply(nested[propertyKey], nested, args)
-}
-
-/**
- * Resolve a prop path on a live instance to the EventEmitter at its end, or
- * undefined if the path doesn't exist or isn't an emitter.
- *
- * @param {any} target
- * @param {string[]} propArray
- * @returns {EventEmitter | undefined}
- */
-function resolveEmitter(target, propArray) {
-  try {
-    const nested = walkPath(target, propArray)
-    return nested instanceof EventEmitter ? nested : undefined
-  } catch {
-    return undefined
-  }
-}
 
 /**
  * One per project public id, for the lifetime of the top-level server. Owns
- * the project's stable SubChannel, one long-lived rpc-reflector server bound
- * to it, and the open/close dance behind them:
+ * the project's stable SubChannel and one long-lived rpc-reflector server
+ * bound to it via a late-bound handler factory. rpc-reflector owns the
+ * instance lifecycle mechanics: it invokes the factory (single-flight) when
+ * the first call or subscription needing a handler arrives, keeps the
+ * client's event subscriptions in a registry that survives the instance, and
+ * re-attaches them to each fresh instance before any awaited frame is
+ * dispatched — so client listeners survive server-side close/re-open cycles
+ * they never hear about. A factory rejection (`NotFoundError`,
+ * `ProjectLeftError`) is answered per request with the error, and is not
+ * cached, so a later call retries.
  *
- * - **dormant** — no live instance. A delegated call (or a new subscription)
- *   triggers an open and waits for it.
- * - **opening** — `manager.getProject` in flight, behind the left-project
- *   guard. Concurrent callers await the same open.
- * - **open** — an instance is live and calls delegate straight to it.
+ * This host adds only what is comapeo-specific: the left-project guard, the
+ * close-in-flight retry around `manager.getProject`, and detaching the
+ * handler when the instance closes so the next call re-opens.
  *
- * The rpc-reflector server never sees an instance: its handler is a facade
- * (see {@link createProjectFacade}) whose method calls await an open instance
- * and whose EventEmitter surface is this host's own listener registry. So
- * client subscriptions live on this side of the instance boundary, and are
- * (re-)attached to whichever instance is live — client listeners survive
- * server-side close/re-open cycles without knowing they happened. Because a
- * call cannot resolve before the open does, and the open attaches listeners
- * before it resolves, a call's events can never be missed.
+ * @param {object} options
+ * @param {MapeoManager} options.manager
+ * @param {MessagePortLike} options.messagePort
+ * @param {string} options.projectPublicId
+ * @param {Parameters<typeof createServer>[2]} [options.opts]
+ * @returns {ProjectHost}
  */
-class ProjectHost {
-  /** @type {'dormant' | 'opening' | 'open'} */
-  #state = 'dormant'
-  /** @type {Promise<MapeoProject> | null} */
-  #openPromise = null
-  /** @type {MapeoProject | null} */
-  #project = null
-  #closed = false
-
-  /**
-   * Encoded prop path → the listener registry rpc-reflector subscribes to.
-   * Holds only rpc-reflector's forwarding listeners, never instance state.
-   * @type {Map<string, EventEmitter>}
-   */
-  #subscriptions = new Map()
-  /**
-   * Encoded prop path → what is currently attached to the live instance, so
-   * it can be detached exactly.
-   * @type {Map<string, {
-   *   emitter: EventEmitter,
-   *   entries: Array<[string | symbol, (...args: any[]) => void]>,
-   * }>}
-   */
-  #attached = new Map()
-
-  #manager
-  #projectPublicId
-  /** @type {{ close: () => void }} */
-  #server
-  /** @type {SubChannel} */
-  channel
-
-  /**
-   * @param {object} options
-   * @param {MapeoManager} options.manager
-   * @param {MessagePortLike} options.messagePort
-   * @param {string} options.projectPublicId
-   * @param {Parameters<typeof createServer>[2]} [options.opts]
-   */
-  constructor({ manager, messagePort, projectPublicId, opts }) {
-    this.#manager = manager
-    this.#projectPublicId = projectPublicId
-
-    const facade = createProjectFacade({
-      apply: (propArray, args) => this.#applyMethod(propArray, args),
-      emitterFor: (propArray) => this.#emitterFor(propArray),
-      onSubscriptionChange: (propArray, { wake }) =>
-        this.#syncSubscriptions(propArray, { wake }),
-    })
-
-    this.channel = new SubChannel(
-      messagePort,
-      `${PROJECT_CHANNEL_PREFIX}${projectPublicId}`,
-    )
-    // Bound before `start()`, so the first frame — which the top-level router
-    // hands to the channel directly — reaches the rpc server.
-    this.#server = createServer(facade, this.channel, opts)
-    this.channel.start()
-  }
-
-  /**
-   * Ensure a live instance is bound to this project's channel, opening it if
-   * necessary. Resolves once calls can be served; rejects with
-   * `ProjectLeftError` for left projects or whatever `manager.getProject`
-   * throws (e.g. `NotFoundError`). Safe to call concurrently.
-   *
-   * @returns {Promise<void>}
-   */
-  async open() {
-    await this.#ensureOpen()
-  }
-
-  close() {
-    // Closed first so rpc-reflector unsubscribes through the facade while the
-    // instance is still live, detaching cleanly.
-    this.#server.close()
-    this.#closed = true
-    this.#detachAll()
-    this.#subscriptions.clear()
-    this.#project = null
-    this.#state = 'dormant'
-    this.channel.close()
-  }
-
-  /**
-   * @param {string[]} propArray
-   * @param {ArrayLike<unknown>} args
-   */
-  async #applyMethod(propArray, args) {
-    const project = await this.#ensureOpen()
-    return applyPath(project, propArray, args)
-  }
-
-  /**
-   * @param {string[]} propArray
-   * @returns {EventEmitter}
-   */
-  #emitterFor(propArray) {
-    const key = JSON.stringify(propArray)
-    let emitter = this.#subscriptions.get(key)
-    if (!emitter) {
-      emitter = new EventEmitter()
-      // One listener per (path, event) comes from rpc-reflector, but the
-      // consumer's own limit shouldn't produce warnings here.
-      emitter.setMaxListeners(0)
-      this.#subscriptions.set(key, emitter)
-    }
-    return emitter
-  }
-
-  /**
-   * @param {string[]} propArray
-   * @param {{ wake: boolean }} options
-   */
-  #syncSubscriptions(propArray, { wake }) {
-    if (this.#closed) return
-    const key = JSON.stringify(propArray)
-    if (this.#state === 'open' && this.#project) {
-      this.#detachPath(key)
-      this.#attachPath(key, this.#project)
-    } else if (wake) {
-      // Subscribing expresses interest in a project, so it opens one.
-      this.#ensureOpen().catch(noop)
-    }
-  }
-
-  /**
-   * @param {string} key
-   * @param {MapeoProject} project
-   */
-  #attachPath(key, project) {
-    const registry = this.#subscriptions.get(key)
-    if (!registry) return
-    const emitter = resolveEmitter(project, JSON.parse(key))
-    if (!emitter) return
-
-    /** @type {Array<[string | symbol, (...args: any[]) => void]>} */
-    const entries = []
-    for (const eventName of registry.eventNames()) {
-      for (const listener of registry.rawListeners(eventName)) {
-        const fn = /** @type {(...args: any[]) => void} */ (listener)
-        emitter.on(eventName, fn)
-        entries.push([eventName, fn])
-      }
-    }
-    if (entries.length > 0) this.#attached.set(key, { emitter, entries })
-  }
-
-  /** @param {string} key */
-  #detachPath(key) {
-    const record = this.#attached.get(key)
-    if (!record) return
-    for (const [eventName, listener] of record.entries) {
-      record.emitter.removeListener(eventName, listener)
-    }
-    this.#attached.delete(key)
-  }
-
-  /** @param {MapeoProject} project */
-  #attachAll(project) {
-    for (const key of this.#subscriptions.keys()) {
-      this.#detachPath(key)
-      this.#attachPath(key, project)
-    }
-  }
-
-  #detachAll() {
-    for (const key of [...this.#attached.keys()]) {
-      this.#detachPath(key)
-    }
-  }
+function createProjectHost({ manager, messagePort, projectPublicId, opts }) {
+  const channel = new SubChannel(
+    messagePort,
+    `${PROJECT_CHANNEL_PREFIX}${projectPublicId}`,
+  )
 
   /** @returns {Promise<MapeoProject>} */
-  #ensureOpen() {
-    if (this.#closed) {
-      return Promise.reject(new Error('Project host is closed'))
+  async function openProject() {
+    // Interim left-project guard, paired with the `leaveProject` request
+    // hook in `createComapeoCoreServer`; both are removed together once core
+    // ships a typed PROJECT_LEFT error (digidem/comapeo-core#1313). Left
+    // projects re-open as live-but-gutted instances (core deliberately
+    // allows this so an interrupted leave can finish), so leftness must be
+    // checked before `getProject`, not inferred from it.
+    const projects = await manager.listProjects({ includeLeft: true })
+    const entry = projects.find((p) => p.projectId === projectPublicId)
+    if (entry && entry.status === 'left') {
+      throw new ProjectLeftError()
     }
-    if (this.#state === 'open' && this.#project) {
-      return Promise.resolve(this.#project)
-    }
-    if (this.#openPromise) return this.#openPromise
 
-    const openPromise = this.#doOpen().finally(() => {
-      if (this.#openPromise === openPromise) this.#openPromise = null
-    })
-    this.#openPromise = openPromise
-    // Subscription-triggered opens have no awaiter; keep a rejection from
-    // surfacing as an unhandled rejection without detaching other awaiters.
-    openPromise.catch(noop)
-    return openPromise
-  }
-
-  /** @returns {Promise<MapeoProject>} */
-  async #doOpen() {
-    this.#state = 'opening'
-    try {
-      // Left-project guard. Left projects re-open as live-but-gutted
-      // instances (core deliberately allows this so an interrupted leave can
-      // finish), so leftness must be checked before `getProject`, not
-      // inferred from it.
-      const projects = await this.#manager.listProjects({ includeLeft: true })
-      const entry = projects.find((p) => p.projectId === this.#projectPublicId)
-      if (entry && entry.status === 'left') {
-        throw new ProjectLeftError()
-      }
-
-      const project = await this.#getOpenableProject()
-      if (this.#closed) {
-        throw new Error('Server closed while opening project')
-      }
-
-      this.#project = project
-      // `once`, not `on`: core's MapeoProject emits `close` twice (once from
-      // `_close`, once from ready-resource).
-      project.once('close', () => this.#onProjectClose(project))
-      // Before the state flips to open, so no delegated call can run against
-      // an instance whose listeners aren't attached yet.
-      this.#attachAll(project)
-
-      this.#state = 'open'
-      return project
-    } catch (err) {
-      this.#state = 'dormant'
-      throw err
-    }
+    const project = await getOpenableProject()
+    // `once`, not `on`: core's MapeoProject emits `close` twice (once from
+    // `_close`, once from ready-resource).
+    project.once('close', () => server.detachHandler())
+    return project
   }
 
   /**
@@ -626,9 +269,9 @@ class ProjectHost {
    *
    * @returns {Promise<MapeoProject>}
    */
-  async #getOpenableProject() {
+  async function getOpenableProject() {
     for (let attempt = 0; attempt < 5; attempt++) {
-      const project = await this.#manager.getProject(this.#projectPublicId)
+      const project = await manager.getProject(projectPublicId)
       if (project.closed) continue
       if (project.closing) {
         await Promise.resolve(project.closing).catch(noop)
@@ -636,17 +279,27 @@ class ProjectHost {
       }
       return project
     }
-    throw new Error(
-      `Project ${this.#projectPublicId} kept closing while opening`,
-    )
+    throw new Error(`Project ${projectPublicId} kept closing while opening`)
   }
 
-  /** @param {MapeoProject} project */
-  #onProjectClose(project) {
-    if (this.#project !== project) return
-    this.#detachAll()
-    this.#project = null
-    if (!this.#closed) this.#state = 'dormant'
+  // Created before `start()`, so the first frame — which the top-level
+  // router hands to the channel directly — reaches the rpc server.
+  const server = createServer(openProject, channel, opts)
+  channel.start()
+
+  return {
+    channel,
+    /**
+     * Bind a live instance now (opening it if necessary), so an eager open
+     * attaches subscriptions before any project-channel frame. Rejects with
+     * `ProjectLeftError` for left projects or whatever `manager.getProject`
+     * throws (e.g. `NotFoundError`). Safe to call concurrently.
+     */
+    ensureHandler: () => server.ensureHandler(),
+    close() {
+      server.close()
+      channel.close()
+    },
   }
 }
 
