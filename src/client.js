@@ -200,6 +200,13 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     // close — whether or not this id was fetched (and cached) earlier.
     if (clientClosed) throw new ClientClosedError()
 
+    // The wire round trip (existence check + eager server-side open) happens
+    // only on first acquisition; after one success the permanent wrapper is
+    // returned directly. A project left after acquisition surfaces on method
+    // calls (which reject with ProjectLeftError over the wire), not here.
+    const existing = projectClients.get(projectPublicId)
+    if (existing) return existing
+
     const pending = pendingProjectClients.get(projectPublicId)
     if (pending) return pending
 
@@ -217,14 +224,12 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
    * @returns {Promise<ComapeoProjectClientApi>}
    */
   async function resolveProjectClient(projectPublicId) {
-    // One round trip on every `getProject`, so a bad id rejects here (with
+    // One round trip on first acquisition, so a bad id rejects here (with
     // `NotFoundError` / `ProjectLeftError`) rather than on the first method
-    // call, and so the server opens the project eagerly. The returned
-    // wrapper is the same object across calls.
+    // call, and so the server opens the project eagerly — attaching
+    // subscriptions before any project-channel frame. A failure is not
+    // cached; the next `getProject` retries.
     await projectRoutingClient.assertProjectExists(projectPublicId)
-
-    const existing = projectClients.get(projectPublicId)
-    if (existing) return existing
 
     const wrapper = createProjectClientWrapper(projectPublicId)
     projectClients.set(projectPublicId, wrapper)

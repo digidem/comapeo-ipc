@@ -150,6 +150,18 @@ test('Two parallel getProject(id) calls return one wrapper and both work', async
   await b.$getProjectSettings()
 })
 
+test('getProject for an already-acquired project makes no wire round trip', async (t) => {
+  const { client, server } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  // With the server gone, no round trip can be answered — only the cached
+  // wrapper from the first acquisition can resolve this.
+  server.close()
+  const again = await client.getProject(projectId)
+  assert.equal(again, project, 'cached wrapper returned without validation')
+})
+
 test('leaveProject: calls reject with ProjectLeftError and the gutted instance is closed', async (t) => {
   const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
@@ -165,12 +177,16 @@ test('leaveProject: calls reject with ProjectLeftError and the gutted instance i
   await client.leaveProject(projectId)
   await closeObserved.promise
 
-  // Both the cached reference and a fresh getProject reject: left projects
-  // are never transparently re-opened.
+  // Calls on the held reference reject: left projects are never
+  // transparently re-opened. `getProject` itself still resolves — the
+  // wrapper was cached at first acquisition, and re-validating it would
+  // cost a round trip — but every call on it rejects the same way.
   await assert.rejects(() => project.$getProjectSettings(), {
     code: ProjectLeftError.code,
   })
-  await assert.rejects(() => client.getProject(projectId), {
+  const again = await client.getProject(projectId)
+  assert.equal(again, project, 'project references are permanent')
+  await assert.rejects(() => again.$getProjectSettings(), {
     code: ProjectLeftError.code,
   })
 })
