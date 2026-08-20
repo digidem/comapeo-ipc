@@ -85,7 +85,7 @@ The wrappers never close or destroy the `messagePort` itself — that is the cal
 Project instance lifecycle is owned entirely by the server. The client cannot close a project (the reflected surface has no `project.close()`), and a project reference never goes stale:
 
 - The server may close a project instance at any time (resource management, `addProject` re-joining a previously-left project, a server restart). The next call on that project's channel transparently re-opens it — callers never observe the cycle.
-- Event subscriptions survive server-side close/re-open: the server records each project's subscribed events and replays them into the fresh instance before serving buffered calls.
+- Event subscriptions survive server-side close/re-open: they are held by the server, on its side of the instance boundary, and re-attached to each fresh instance before any call is served against it. Subscribing to a project whose instance is closed re-opens it.
 - The one exception is a left project, which is never re-opened — see [`ProjectLeftError`](#errors).
 - A `leaveProject` call routed through this server also closes the stale instance `@comapeo/core` leaves cached after leaving (core only cleans that up itself inside `addProject`).
 - `closeComapeoCoreClient(client)` tears down the manager, the project-routing channel, and every project reference. After this, all calls — including `getProject(id)` — reject with [`ClientClosedError`](#errors). (The services client is independent; close it separately with [`closeComapeoServicesClient`](#closecomapeoservicesclientservicesclient-clientapicomapeoservicesapi-void).)

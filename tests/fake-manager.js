@@ -20,10 +20,23 @@ import { NotFoundError } from '@comapeo/core/errors.js'
  * @property {number} obsCounter
  */
 
+/**
+ * A nested namespace that is itself an EventEmitter, mirroring core's
+ * `project.$sync`: the IPC server must resolve method calls and event
+ * subscriptions at nested paths, not just at the project root.
+ */
+class FakeSync extends EventEmitter {
+  async getState() {
+    return { state: 'idle' }
+  }
+}
+
 class FakeProject extends EventEmitter {
   /** @type {ProjectStore} */
   #store
   #closed = false
+
+  $sync = new FakeSync()
 
   // Mirror ready-resource's surface, which the IPC server reads to avoid
   // binding to an instance whose close is in flight.

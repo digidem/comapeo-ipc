@@ -305,6 +305,62 @@ test('Method calls on a never-validated reference to an unknown project reject',
   assert.equal(settings.name, 'mapeo')
 })
 
+// The project channel's rpc handler is a facade that delegates to whichever
+// instance is live, so a bad method path is resolved against the instance at
+// call time. It must fail the same way it did when the instance itself was
+// the handler.
+test('Calling a method that does not exist rejects with a ReferenceError', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  await assert.rejects(
+    // @ts-expect-error deliberately absent from the API
+    () => project.notAMethod(),
+    { name: 'ReferenceError', message: /notAMethod is not defined/ },
+  )
+  await assert.rejects(
+    // @ts-expect-error deliberately absent from the API
+    () => project.observation.notAMethod(),
+    { name: 'ReferenceError', message: /notAMethod is not defined/ },
+  )
+  await assert.rejects(
+    // @ts-expect-error deliberately absent from the API
+    () => project.noSuchNamespace.create(),
+    { name: 'ReferenceError', message: /noSuchNamespace is not defined/ },
+  )
+
+  // The project is still healthy afterwards.
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+})
+
+test('Concurrent calls to a dormant project open the instance exactly once', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  const serverProject = await serverManager.getProject(projectId)
+  await serverProject.close()
+
+  const before = serverManager.getProjectCallCount.get(projectId)
+  await Promise.all([
+    project.$getProjectSettings(),
+    project.$getProjectSettings(),
+    project.observation.create({
+      schemaName: 'observation',
+      attachments: [],
+      tags: {},
+    }),
+  ])
+
+  assert.equal(
+    serverManager.getProjectCallCount.get(projectId),
+    (before ?? 0) + 1,
+    'concurrent calls share a single open',
+  )
+})
+
 test('project.close is not exposed on the client surface', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })

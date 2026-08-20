@@ -6,6 +6,21 @@ import { ClientClosedError } from '../src/errors.js'
 import { closeComapeoCoreClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
+
+/**
+ * Poll until `predicate` holds, for assertions about work the server does on
+ * its own initiative (with no call to await).
+ *
+ * @param {() => boolean} predicate
+ * @param {string} description
+ */
+async function waitFor(predicate, description) {
+  for (let i = 0; i < 200; i++) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert.fail(`Timed out waiting for ${description}`)
+}
 import { FakeManager } from './fake-manager.js'
 
 test('Server events are forwarded to client listeners', async (t) => {
@@ -102,6 +117,41 @@ test('Project event subscriptions survive a server-side close and re-open', asyn
   assert.deepEqual(received, ['before-close', 'after-reopen'])
 })
 
+// Subscriptions are held per prop path, so a nested namespace that is itself
+// an EventEmitter (core's `project.$sync`) must be re-attached to the matching
+// namespace of the fresh instance — not just the project root.
+test('Nested-namespace subscriptions survive a server-side close and re-open', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  /** @type {unknown[]} */
+  const received = []
+  project.$sync.on('sync-state', (value) => received.push(value))
+  await project.$sync.getState()
+
+  const firstInstance = await serverManager.getProject(projectId)
+  firstInstance.$sync.emit('sync-state', 'before-close')
+  await project.$sync.getState()
+  assert.deepEqual(received, ['before-close'])
+
+  await firstInstance.close()
+  await project.$sync.getState()
+
+  const secondInstance = await serverManager.getProject(projectId)
+  assert.notEqual(secondInstance, firstInstance)
+  secondInstance.$sync.emit('sync-state', 'after-reopen')
+  await project.$sync.getState()
+
+  assert.deepEqual(received, ['before-close', 'after-reopen'])
+
+  // Root and nested subscriptions are independent: the root emitter must not
+  // have picked up the nested namespace's listener.
+  secondInstance.emit('sync-state', 'from-root')
+  await project.$sync.getState()
+  assert.deepEqual(received, ['before-close', 'after-reopen'])
+})
+
 test('Unsubscribed project events are not replayed on re-open', async (t) => {
   const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
@@ -145,6 +195,35 @@ test('A subscription made while the project is closed server-side still takes ef
   await project.$getProjectSettings()
 
   const secondInstance = await serverManager.getProject(projectId)
+  secondInstance.emit('some-event', 'woken')
+  assert.equal(await deferred.promise, 'woken')
+})
+
+// Subscribing is itself a reason to open a project: a consumer that only
+// listens (a component mounted on `$sync` events, or #89's post-restart
+// resubscribe) would otherwise never receive anything. Every other test here
+// makes a method call after subscribing, which masks this.
+test('Subscribing alone re-opens a dormant project, with no further calls', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
+
+  const firstInstance = await serverManager.getProject(projectId)
+  const opensBefore = serverManager.getProjectCallCount.get(projectId) ?? 0
+  await firstInstance.close()
+
+  /** @type {import('p-defer').DeferredPromise<unknown>} */
+  const deferred = pDefer()
+  project.on('some-event', (value) => deferred.resolve(value))
+
+  await waitFor(
+    () => (serverManager.getProjectCallCount.get(projectId) ?? 0) > opensBefore,
+    'the server to re-open the project for the subscription alone',
+  )
+
+  const secondInstance = await serverManager.getProject(projectId)
+  assert.notEqual(secondInstance, firstInstance)
   secondInstance.emit('some-event', 'woken')
   assert.equal(await deferred.promise, 'woken')
 })

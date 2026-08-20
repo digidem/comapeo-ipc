@@ -45,8 +45,8 @@ test('Malformed and unroutable messages are ignored and the client keeps working
   port2.postMessage({ id: unknownId, message: { value: 'whatever' } })
   port2.postMessage({ id: unknownId, message: { value: 'whatever' } })
   // A project-shaped id for a project that doesn't exist, carrying a frame
-  // that isn't a request: the server attempts an open (which fails with
-  // NotFound) and drops the frame silently — nothing to respond to, no log.
+  // that isn't a request: rpc-reflector rejects it as an invalid message and
+  // no project open is ever attempted — nothing to respond to, no log.
   port2.postMessage({
     id: '@@comapeo/project/project-999',
     message: { value: 'whatever' },
