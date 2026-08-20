@@ -48,6 +48,9 @@ function createClosedProxy(makeError) {
   /** @type {ProxyHandler<any>} */
   const handler = {
     get(_target, prop) {
+      // A truthy `then` would make every nested node a thenable whose
+      // callbacks are never invoked — awaiting a namespace would hang.
+      if (prop === 'then') return undefined
       if (typeof prop === 'string') {
         if (SUBSCRIBE_METHODS.has(prop) || OTHER_EMITTER_METHODS.has(prop)) {
           return () => {
@@ -145,6 +148,11 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
   // the manager proxy and the per-project wrappers so that calls after close
   // surface `ClientClosedError` instead of rpc-reflector's `ChannelClosed`.
   let clientClosed = false
+  // Set at the START of the close routine: a getProject whose validation
+  // round trip resolves during the close's await window must not create a
+  // wrapper after the sweep (leaking a port listener and an unclosed rpc
+  // client) — it rejects instead.
+  let clientClosing = false
   const clientClosedProxy = createClosedProxy(() => new ClientClosedError())
 
   function handleTransportReset() {
@@ -190,6 +198,7 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
 
       if (prop === CLOSE) {
         return async () => {
+          clientClosing = true
           managerChannel.close()
           createClient.close(managerClient)
 
@@ -271,6 +280,11 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     // subscriptions before any project-channel frame. A failure is not
     // cached; the next `getProject` retries.
     await projectRoutingClient.assertProjectExists(projectPublicId)
+
+    // The close routine may have started while the round trip above was in
+    // flight; its sweep only covers wrappers that already exist, so don't
+    // create one it can never clean up.
+    if (clientClosing) throw new ClientClosedError()
 
     const wrapper = createProjectClientWrapper(projectPublicId)
     projectClients.set(projectPublicId, wrapper)

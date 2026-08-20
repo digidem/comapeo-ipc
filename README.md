@@ -19,17 +19,21 @@ Note that [`@comapeo/core`](https://github.com/digidem/comapeo-core) is a peer d
 npm install @comapeo/ipc @comapeo/core
 ```
 
+> **Release order for v10**: this version depends on `rpc-reflector` `^4.5.0`, which is not yet published — 4.5.0 must be released from its branch HEAD (which includes a fix landed after the version-bump commit) and this package's lockfile regenerated before v10 can be released. Until then `npm ci` fails; develop against a local checkout via `npm install <path-to-rpc-reflector> --no-save`.
+
 ## API
 
-### `createComapeoCoreServer(manager: MapeoManager, messagePort: MessagePortLike): { close: () => void }`
+### `createComapeoCoreServer(manager: MapeoManager, messagePort: MessagePortLike, opts?: { logger?, onRequestHook? }): { close: () => void }`
 
 Creates the IPC server instance. `manager` is a `@comapeo/core` `MapeoManager` instance and `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort).
 
+`opts` is passed through to each underlying [`rpc-reflector` server](https://github.com/digidem/rpc-reflector) (manager, project routing, and per-project): `opts.logger` enables logging (`false`, the default, disables it; or pass a pino-compatible logger / the global `console`), and `opts.onRequestHook` observes each request and its response. Note that on the manager server a consumer-supplied `onRequestHook` is wrapped by the interim `leaveProject` hook (see [Lifecycle](#lifecycle)): the consumer hook runs as supplied, and completed `leaveProject` calls additionally trigger the stale-instance cleanup.
+
 Returns an object with a `close()` method, which removes relevant event listeners from the `messagePort`. Does not close or destroy the `messagePort`.
 
-### `createComapeoCoreClient(messagePort: MessagePortLike, opts?: { timeout?: number }): ClientApi<MapeoManager>`
+### `createComapeoCoreClient(messagePort: MessagePortLike, opts?: { timeout?: number, logger? }): ClientApi<MapeoManager>`
 
-Creates the IPC client instance. `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort). `opts.timeout` is an optional timeout used for sending and receiving messages over the channel.
+Creates the IPC client instance. `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort). `opts` is passed through to each underlying [`rpc-reflector` client](https://github.com/digidem/rpc-reflector): `opts.timeout` is an optional per-call timeout for messages over the channel; `opts.logger` as for the server.
 
 Returns a client instance that reflects the interface of the `manager` provided to [`createComapeoCoreServer`](#createcomapeocoreservermanager-mapeomanager-messageport-messageportlike--close---void). Refer to the [`rpc-reflector` docs](https://github.com/digidem/rpc-reflector#const-clientapi--createclientchannel) for additional information about how to use this.
 

@@ -241,21 +241,30 @@ function createProjectHost({ manager, messagePort, projectPublicId, opts }) {
     `${PROJECT_CHANNEL_PREFIX}${projectPublicId}`,
   )
 
-  /** @returns {Promise<MapeoProject>} */
-  async function openProject() {
-    // Interim left-project guard, paired with the `leaveProject` request
-    // hook in `createComapeoCoreServer`; both are removed together once core
-    // ships a typed PROJECT_LEFT error (digidem/comapeo-core#1313). Left
-    // projects re-open as live-but-gutted instances (core deliberately
-    // allows this so an interrupted leave can finish), so leftness must be
-    // checked before `getProject`, not inferred from it.
+  /**
+   * Interim left-project guard, paired with the `leaveProject` request hook
+   * in `createComapeoCoreServer`; both are removed together once core ships
+   * a typed PROJECT_LEFT error (digidem/comapeo-core#1313). Left projects
+   * re-open as live-but-gutted instances (core deliberately allows this so
+   * an interrupted leave can finish), so leftness must be checked via
+   * `listProjects`, not inferred from `getProject`.
+   */
+  async function assertNotLeft() {
     const projects = await manager.listProjects({ includeLeft: true })
     const entry = projects.find((p) => p.projectId === projectPublicId)
     if (entry && entry.status === 'left') {
       throw new ProjectLeftError()
     }
+  }
 
+  /** @returns {Promise<MapeoProject>} */
+  async function openProject() {
+    await assertNotLeft()
     const project = await getOpenableProject()
+    // Re-checked after the open resolves: a leave can land while the open
+    // was in flight (leave waits for sync), and binding then would serve
+    // calls from the gutted instance instead of rejecting them.
+    await assertNotLeft()
     // `once`, not `on`: core's MapeoProject emits `close` twice (once from
     // `_close`, once from ready-resource).
     project.once('close', () => server.detachHandler())
