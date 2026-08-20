@@ -6,6 +6,26 @@ import { NotFoundError } from '@comapeo/core/errors.js'
 import { setup } from './helpers.js'
 import { FakeManager } from './fake-manager.js'
 import { ProjectLeftError } from '../src/errors.js'
+import {
+  createComapeoCoreClient,
+  closeComapeoCoreClient,
+} from '../src/client.js'
+import { createComapeoCoreServer } from '../src/server.js'
+
+/**
+ * Poll until `predicate` holds, for assertions about work the server does on
+ * its own initiative (with no call to await).
+ *
+ * @param {() => boolean} predicate
+ * @param {string} description
+ */
+async function waitFor(predicate, description) {
+  for (let i = 0; i < 200; i++) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert.fail(`Timed out waiting for ${description}`)
+}
 
 // Project instance lifecycle is owned by the server: project references are
 // permanent, and the server transparently re-opens a project whose instance
@@ -302,21 +322,43 @@ test('Method calls on a never-validated reference to an unknown project reject',
 
   // Bypass getProject's existence check by writing a request frame straight
   // onto an unknown project's channel — this is what a desynced or misbehaving
-  // client would produce. The server must answer with an error response (the
-  // handler factory's rejection), not leave the call to time out.
+  // client would produce. The server must answer with a per-request error
+  // response (the handler factory's rejection), not leave the call to time
+  // out.
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
   await project.$getProjectSettings()
 
+  const channelId = '@@comapeo/project/no-such-project'
+  /** @type {any[]} */
+  const responses = []
+  /** @param {any} event */
+  const captureResponse = (event) => {
+    if (event.data?.id === channelId) responses.push(event.data.message)
+  }
+  port2.addEventListener('message', captureResponse)
+  t.after(() => port2.removeEventListener('message', captureResponse))
+
   // REQUEST frame: [msgType.REQUEST = 0, msgId, propArray, args]
   port2.postMessage({
-    id: '@@comapeo/project/no-such-project',
-    message: [0, 1, ['$getProjectSettings'], []],
+    id: channelId,
+    message: [0, 99, ['$getProjectSettings'], []],
   })
 
-  // The response goes to a channel no local client listens on; all we can
-  // assert from here is that the server stays healthy afterwards.
-  await new Promise((resolve) => setImmediate(resolve))
+  await waitFor(
+    () => responses.length > 0,
+    'an error response on the unknown project channel',
+  )
+  const [response] = responses
+  assert.equal(response[0], 1, 'RESPONSE frame (msgType.RESPONSE)')
+  assert.equal(response[1], 99, 'answers the request msgId')
+  assert.equal(
+    response[2]?.code,
+    NotFoundError.code,
+    'carries the factory rejection, code preserved',
+  )
+
+  // And the server stays healthy afterwards.
   const settings = await project.$getProjectSettings()
   assert.equal(settings.name, 'mapeo')
 })
@@ -387,4 +429,246 @@ test('project.close is not exposed on the client surface', async (t) => {
     undefined,
     'lifecycle is server-owned; the client cannot close a project',
   )
+})
+
+test('A leave that races an in-flight open still rejects with ProjectLeftError', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  // Hold the factory's `manager.getProject` open so a leave can land between
+  // the factory's first left check and the instance resolving — the window
+  // core's leaveProject keeps open for up to its sync wait.
+  const gate = pDefer()
+  const factoryBlocked = pDefer()
+  const originalGetProject = manager.getProject.bind(manager)
+  let intercepted = false
+  manager.getProject = async (id) => {
+    if (!intercepted) {
+      intercepted = true
+      factoryBlocked.resolve(undefined)
+      await gate.promise
+    }
+    return originalGetProject(id)
+  }
+
+  const acquiring = client.getProject(projectId)
+  await factoryBlocked.promise
+  await manager.leaveProject(projectId)
+  gate.resolve(undefined)
+
+  // Without the post-open re-check the factory would bind the gutted
+  // instance and the call would resolve with garbage.
+  await assert.rejects(() => acquiring, { code: ProjectLeftError.code })
+})
+
+test("Core's double close emit is harmless to the host", async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  /** @type {unknown[]} */
+  const received = []
+  project.on('some-event', (value) => received.push(value))
+  await project.$getProjectSettings()
+
+  const instance = await serverManager.getProject(projectId)
+  let closeEmits = 0
+  instance.on('close', () => closeEmits++)
+  await instance.close()
+  assert.equal(closeEmits, 2, 'fake models core: close is emitted twice')
+
+  // A stray extra emit after close must also be harmless (detach is
+  // idempotent and the host's once() is already consumed).
+  instance.emit('close')
+
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+
+  const fresh = await serverManager.getProject(projectId)
+  fresh.emit('some-event', 'after-reopen')
+  await project.$getProjectSettings()
+  assert.deepEqual(received, ['after-reopen'], 'subscriptions survived')
+})
+
+test('Opening while an instance close is in flight waits it out and binds the fresh instance', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  // Open server-side only, then start a close held open by a gate: `closing`
+  // is set, `closed` is not, and the manager cache still returns the dying
+  // instance (core evicts only on the `close` event).
+  const dying = await manager.getProject(projectId)
+  const gate = pDefer()
+  dying.holdClose(gate.promise)
+  const closing = dying.close()
+
+  // First acquisition arrives mid-close: the host must wait the close out
+  // and retry, not bind the corpse.
+  const acquiring = client.getProject(projectId)
+  await waitFor(
+    () => (manager.getProjectCallCount.get(projectId) ?? 0) >= 2,
+    'the factory to observe the dying instance',
+  )
+  gate.resolve(undefined)
+  await closing
+
+  const project = await acquiring
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+
+  const fresh = await manager.getProject(projectId)
+  assert.notEqual(fresh, dying, 'bound instance is the post-close one')
+  assert.equal(fresh.closed, false)
+  assert.equal(
+    manager.getProjectCallCount.get(projectId),
+    4,
+    'test open + dying observation + retry + this getProject',
+  )
+})
+
+test('Gives up after the project keeps closing while opening', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  // Every open observes an instance whose close is already in flight — a
+  // pathological resource policy closing projects as fast as they open.
+  const originalGetProject = manager.getProject.bind(manager)
+  manager.getProject = async (id) => {
+    const project = await originalGetProject(id)
+    project.close()
+    return project
+  }
+
+  await assert.rejects(() => client.getProject(projectId), {
+    message: /kept closing while opening/,
+  })
+})
+
+test('Re-invite after leaving a never-acquired project: getProject succeeds', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  await client.leaveProject(projectId)
+  await assert.rejects(() => client.getProject(projectId), {
+    code: ProjectLeftError.code,
+  })
+
+  // Re-invite: nothing was cached for this id (the failed acquisition is not
+  // cached either), so the next getProject validates afresh and succeeds.
+  await manager.addProject(projectId)
+  const project = await client.getProject(projectId)
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+})
+
+test('Parallel first getProject calls make exactly one validation round trip', async (t) => {
+  const { port1, port2 } = new MessageChannel()
+  const manager = new FakeManager()
+  let assertCalls = 0
+  const server = createComapeoCoreServer(/** @type {any} */ (manager), port1, {
+    onRequestHook: (request, next) => {
+      if (request.method.join('.') === 'assertProjectExists') assertCalls++
+      next(request)
+    },
+  })
+  const client = createComapeoCoreClient(port2)
+  port1.start()
+  port2.start()
+  t.after(async () => {
+    server.close()
+    await closeComapeoCoreClient(client)
+    port1.close()
+    port2.close()
+  })
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const [a, b, c] = await Promise.all([
+    client.getProject(projectId),
+    client.getProject(projectId),
+    client.getProject(projectId),
+  ])
+  assert.equal(a, b)
+  assert.equal(b, c)
+  assert.equal(assertCalls, 1, 'concurrent first calls share one round trip')
+
+  await client.getProject(projectId)
+  assert.equal(assertCalls, 1, 'cached wrapper: no further round trips')
+})
+
+test('A consumer onRequestHook composes with the interim leave hook', async (t) => {
+  const { port1, port2 } = new MessageChannel()
+  const manager = new FakeManager()
+  /** @type {string[]} */
+  const hookedMethods = []
+  const server = createComapeoCoreServer(/** @type {any} */ (manager), port1, {
+    onRequestHook: (request, next) => {
+      hookedMethods.push(request.method.join('.'))
+      next(request)
+    },
+  })
+  const client = createComapeoCoreClient(port2)
+  port1.start()
+  port2.start()
+  t.after(async () => {
+    server.close()
+    await closeComapeoCoreClient(client)
+    port1.close()
+    port2.close()
+  })
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
+
+  const liveInstance = await manager.getProject(projectId)
+  const closeObserved = pDefer()
+  liveInstance.once('close', () => closeObserved.resolve(undefined))
+
+  await client.leaveProject(projectId)
+  // The interim leave hook still ran under the consumer hook: the gutted
+  // instance gets closed.
+  await closeObserved.promise
+
+  assert.ok(
+    hookedMethods.includes('createProject'),
+    'consumer hook saw manager calls',
+  )
+  assert.ok(
+    hookedMethods.includes('leaveProject'),
+    'consumer hook saw the leave',
+  )
+  await assert.rejects(() => project.$getProjectSettings(), {
+    code: ProjectLeftError.code,
+  })
+})
+
+test('A failed leaveProject still closes the opened instance', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  // Leave fails after opening the instance (mirrors core: leave can fail
+  // mid-way, after `getProject`); the cleanup close must run regardless.
+  manager.leaveProject = async (id) => {
+    await manager.getProject(id)
+    throw new Error('leave failed mid-way')
+  }
+
+  const instance = await manager.getProject(projectId)
+  const closeObserved = pDefer()
+  instance.once('close', () => closeObserved.resolve(undefined))
+
+  await assert.rejects(() => client.leaveProject(projectId), {
+    message: /leave failed mid-way/,
+  })
+  await closeObserved.promise
+
+  // The project was never actually left, so it simply re-opens and works.
+  const project = await client.getProject(projectId)
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
 })

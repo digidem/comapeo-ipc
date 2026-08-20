@@ -35,11 +35,14 @@ class FakeProject extends EventEmitter {
   /** @type {ProjectStore} */
   #store
   #closed = false
+  /** @type {Promise<void> | null} */
+  #closeHold = null
 
   $sync = new FakeSync()
 
   // Mirror ready-resource's surface, which the IPC server reads to avoid
-  // binding to an instance whose close is in flight.
+  // binding to an instance whose close is in flight: `closing` is the close
+  // promise from the moment a close starts, `closed` flips once it is done.
   /** @type {Promise<void> | null} */
   closing = null
 
@@ -77,9 +80,29 @@ class FakeProject extends EventEmitter {
     return { ...this.#store.settings }
   }
 
-  async close() {
-    if (this.#closed) return
+  /**
+   * Test knob: make an in-flight close wait for `promise` before completing,
+   * to hold open the window where `closing` is set but `closed` is not.
+   *
+   * @param {Promise<void>} promise
+   */
+  holdClose(promise) {
+    this.#closeHold = promise
+  }
+
+  /** @returns {Promise<void>} */
+  close() {
+    if (this.closing) return this.closing
+    this.closing = this.#doClose()
+    return this.closing
+  }
+
+  async #doClose() {
+    await this.#closeHold
     this.#closed = true
+    // Mirror core: `close` is emitted TWICE — once manually from
+    // MapeoProject's `_close` and once by ready-resource itself.
+    this.emit('close')
     this.emit('close')
   }
 }

@@ -175,6 +175,43 @@ test('Client calls fail after server closes', async (t) => {
   }
 })
 
+test('A getProject in flight when the client closes rejects with ClientClosedError', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  // In flight when the close starts: its validation round trip resolves
+  // during the close's await window, after the project-client sweep can no
+  // longer include a freshly minted wrapper. It must reject rather than
+  // create a wrapper (and its port listener) that nothing will clean up.
+  const inFlight = client.getProject(projectId)
+  const closing = closeComapeoCoreClient(client)
+
+  await assert.rejects(() => inFlight, { code: ClientClosedError.code })
+  await closing
+})
+
+test('Awaiting a nested namespace after close resolves instead of hanging', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  await closeComapeoCoreClient(client)
+
+  // `await` probes `then`; a truthy `then` on the closed proxy would make
+  // this a thenable whose callbacks never fire — a permanent hang.
+  const namespace = await project.observation
+  assert.ok(namespace)
+  await assert.rejects(
+    () =>
+      namespace.create({
+        schemaName: 'observation',
+        attachments: [],
+        tags: {},
+      }),
+    { code: ClientClosedError.code },
+  )
+})
+
 test('In-flight calls reject with RpcChannelClosedError when the client closes', async (t) => {
   const { client } = setup(t)
 
