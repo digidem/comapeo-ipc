@@ -51,6 +51,14 @@ Creates the services client, reflecting the `services` object passed to [`create
 
 Closes the services client. Does not close or destroy the `messagePort`.
 
+### `notifyTransportReset(client): void`
+
+Tell a client (core or services) that its transport to the server has dropped: every in-flight call rejects immediately with [`RpcChannelClosedError`](#errors) instead of waiting out its timeout. The client remains fully usable. See [Transport reset](#transport-reset).
+
+### `resubscribe(client): void`
+
+Re-send a client's (core or services) event subscriptions to the server, once the transport to a restarted server is connected again. See [Transport reset](#transport-reset).
+
 ## Behaviour
 
 These are the guarantees the wrappers add on top of [`rpc-reflector`](https://github.com/digidem/rpc-reflector); they are exercised by the test suite.
@@ -76,20 +84,31 @@ The wrappers never close or destroy the `messagePort` itself — that is the cal
 
 `client.getProject(id)` resolves with a client that reflects the `MapeoProject` API, including nested namespaces such as `project.observation.*`.
 
-- **Deduplicated.** Concurrent or repeated `getProject(id)` calls resolve to the same reference — project references are permanent for the lifetime of the client.
+- **Deduplicated.** Concurrent or repeated `getProject(id)` calls resolve to the same reference — project references are permanent for the lifetime of the client. The id is validated with the server (and the project eagerly opened) only on **first acquisition**; after one success the cached wrapper is returned with no wire round trip.
 - **Missing projects.** If the project does not exist, `getProject(id)` rejects with `NotFoundError` (from `@comapeo/core`). A failed lookup is not cached, so a later call for an id that does exist still succeeds.
-- **Left projects.** If this device has left the project (`manager.leaveProject`), `getProject(id)` — and every method call on an already-held reference — rejects with [`ProjectLeftError`](#errors) until the project is re-joined via an invite, after which the same reference works again.
+- **Left projects.** If this device has left the project (`manager.leaveProject`), every method call on a held reference rejects with [`ProjectLeftError`](#errors) until the project is re-joined via an invite, after which the same reference works again. `getProject(id)` rejects the same way on first acquisition; for a project acquired before leaving it still resolves with the cached wrapper (whose calls then reject).
 
 ### Lifecycle
 
-Project instance lifecycle is owned entirely by the server. The client cannot close a project (the reflected surface has no `project.close()`), and a project reference never goes stale:
+Project instance lifecycle is owned entirely by the server. The client cannot close a project (the reflected surface has no `project.close()`), and a project reference never goes stale.
+
+The server delegates the lifecycle mechanics to rpc-reflector's late-bound handlers: each project channel has one long-lived rpc-reflector server whose handler — the live `MapeoProject` instance — is bound lazily by a factory when the first call or subscription arrives, and detached when the instance closes. rpc-reflector keeps event subscriptions in a registry that outlives the instance and re-attaches them to each fresh instance before any waiting call is dispatched. Concretely:
 
 - The server may close a project instance at any time (resource management, `addProject` re-joining a previously-left project, a server restart). The next call on that project's channel transparently re-opens it — callers never observe the cycle.
-- Event subscriptions survive server-side close/re-open: they are held by the server, on its side of the instance boundary, and re-attached to each fresh instance before any call is served against it. Subscribing to a project whose instance is closed re-opens it.
+- Event subscriptions survive server-side close/re-open, and subscribing to a project whose instance is closed re-opens it — a consumer that only listens still receives events.
 - The one exception is a left project, which is never re-opened — see [`ProjectLeftError`](#errors).
-- A `leaveProject` call routed through this server also closes the stale instance `@comapeo/core` leaves cached after leaving (core only cleans that up itself inside `addProject`).
+- A `leaveProject` call routed through this server also closes the stale instance `@comapeo/core` leaves cached after leaving (core only cleans that up itself inside `addProject`). This hook and the server's left-project guard are an interim pair, removed together once core ships a typed PROJECT_LEFT error ([digidem/comapeo-core#1313](https://github.com/digidem/comapeo-core/issues/1313)).
 - `closeComapeoCoreClient(client)` tears down the manager, the project-routing channel, and every project reference. After this, all calls — including `getProject(id)` — reject with [`ClientClosedError`](#errors). (The services client is independent; close it separately with [`closeComapeoServicesClient`](#closecomapeoservicesclientservicesclient-clientapicomapeoservicesapi-void).)
 - Calls already in flight when the client closes reject with [`RpcChannelClosedError`](#errors); they are not re-routed.
+
+### Transport reset
+
+When the process hosting the server dies and restarts while the client stays alive (e.g. Android's foreground service being killed), the transport owner should drive a two-phase recovery:
+
+- At drop time, call `notifyTransportReset(client)` (on the core client and, if used, the services client): every in-flight call rejects immediately with [`RpcChannelClosedError`](#errors) (`code: 'RPC_CHANNEL_CLOSED'`) instead of waiting out its timeout. Reads are safe to retry once the transport reconnects; whether to replay a mutation is the caller's judgement — nothing is replayed automatically.
+- Once the transport is connected to the restarted server, call `resubscribe(client)` (on the same clients): every event subscription — manager and per-project — is re-sent, since the fresh server has no subscription state. Resubscription is deliberately not done at drop time: ON frames written into a down transport can keep nudging it into reconnect attempts while the server stays down.
+
+Project references need no recovery: their channels are keyed by project id, which a restarted server serves identically — the next call (or a replayed subscription) transparently re-opens the project. Both functions are safe to call repeatedly and are no-ops after the client is closed.
 
 ### Events
 
@@ -113,7 +132,7 @@ import {
 
 RPC methods return a rejected `Promise` carrying the error, so failures surface through normal `await`/`.catch()` handling. The exception is the event-emitter methods, which return synchronously rather than a promise — after the client is closed, subscribe methods (`on`, `once`, `addListener`, and `emit`/introspection) **throw** `ClientClosedError` synchronously so the failure surfaces at the call site rather than as an unhandled rejection, while unsubscribe methods (`off`, `removeListener`, `removeAllListeners`) are safe no-ops — removing a listener from a dead client is correct teardown.
 
-Calls that were already in flight when the close happened are not re-routed: they reject with **`RpcChannelClosedError`** as the underlying channel tears down. `RpcTimeoutError` is thrown when a call exceeds the `opts.timeout` passed to [`createComapeoCoreClient`](#createcomapeocoreclientmessageport-messageportlike-opts--timeout-number--clientapimapeomanager).
+Calls that were already in flight when the close happened are not re-routed: they reject with **`RpcChannelClosedError`** (`code: 'RPC_CHANNEL_CLOSED'`) as the underlying channel tears down. The same error rejects in-flight calls when [`notifyTransportReset`](#transport-reset) is called. `RpcTimeoutError` is thrown when a call exceeds the `opts.timeout` passed to [`createComapeoCoreClient`](#createcomapeocoreclientmessageport-messageportlike-opts--timeout-number--clientapimapeomanager).
 
 ## Usage
 
