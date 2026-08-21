@@ -58,7 +58,7 @@
   "dependencies": {
     "custom-error-creator": "^1.4.0",
     "p-defer": "^4.0.1",
-    "rpc-reflector": "^4.2.0"
+    "rpc-reflector": "github:digidem/rpc-reflector#fec43e018e553e5ce1652c6495ef84e38a250750"
   },
   "peerDependencies": {
     "@comapeo/core": "^7.0.1"

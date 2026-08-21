@@ -9,9 +9,10 @@ export const MANAGER_CHANNEL_ID = '@@comapeo/manager'
 export const PROJECT_ROUTING_ID = '@@comapeo/project-routing'
 export const SERVICES_ID = '@@comapeo/services'
 
-// Prefix for per-project instance channel ids; the rest of the id is the
-// project's public id plus a per-open counter (see `openProjectInstance`).
-export const PROJECT_INSTANCE_PREFIX = '@@comapeo/project/'
+// Prefix for per-project channel ids; the rest of the id is the project's
+// public id. The id is stable across close/re-open cycles and server
+// restarts — the server owns instance lifecycle behind it.
+export const PROJECT_CHANNEL_PREFIX = '@@comapeo/project/'
 
 /** @import {MessagePortLike, MessageEvent} from 'rpc-reflector' */
 

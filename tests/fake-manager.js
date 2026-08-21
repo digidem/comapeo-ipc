@@ -20,10 +20,35 @@ import { NotFoundError } from '@comapeo/core/errors.js'
  * @property {number} obsCounter
  */
 
+/**
+ * A nested namespace that is itself an EventEmitter, mirroring core's
+ * `project.$sync`: the IPC server must resolve method calls and event
+ * subscriptions at nested paths, not just at the project root.
+ */
+class FakeSync extends EventEmitter {
+  async getState() {
+    return { state: 'idle' }
+  }
+}
+
 class FakeProject extends EventEmitter {
   /** @type {ProjectStore} */
   #store
   #closed = false
+  /** @type {Promise<void> | null} */
+  #closeHold = null
+
+  $sync = new FakeSync()
+
+  // Mirror ready-resource's surface, which the IPC server reads to avoid
+  // binding to an instance whose close is in flight: `closing` is the close
+  // promise from the moment a close starts, `closed` flips once it is done.
+  /** @type {Promise<void> | null} */
+  closing = null
+
+  get closed() {
+    return this.#closed
+  }
 
   /** @param {ProjectStore} store */
   constructor(store) {
@@ -55,9 +80,29 @@ class FakeProject extends EventEmitter {
     return { ...this.#store.settings }
   }
 
-  async close() {
-    if (this.#closed) return
+  /**
+   * Test knob: make an in-flight close wait for `promise` before completing,
+   * to hold open the window where `closing` is set but `closed` is not.
+   *
+   * @param {Promise<void>} promise
+   */
+  holdClose(promise) {
+    this.#closeHold = promise
+  }
+
+  /** @returns {Promise<void>} */
+  close() {
+    if (this.closing) return this.closing
+    this.closing = this.#doClose()
+    return this.closing
+  }
+
+  async #doClose() {
+    await this.#closeHold
     this.#closed = true
+    // Mirror core: `close` is emitted TWICE — once manually from
+    // MapeoProject's `_close` and once by ready-resource itself.
+    this.emit('close')
     this.emit('close')
   }
 }
@@ -67,6 +112,8 @@ export class FakeManager extends EventEmitter {
   #stores = new Map()
   /** @type {Map<string, FakeProject>} */
   #liveProjects = new Map()
+  /** @type {Set<string>} */
+  #leftProjects = new Set()
   #projectCounter = 0
 
   /**
@@ -136,11 +183,51 @@ export class FakeManager extends EventEmitter {
     return project
   }
 
-  async listProjects() {
-    return [...this.#stores.entries()].map(([projectId, store]) => ({
-      projectId,
-      name: store.settings.name,
-    }))
+  /**
+   * Mirror core: left projects are omitted unless `includeLeft`, in which
+   * case they appear with `status: 'left'`.
+   *
+   * @param {{ includeLeft?: boolean }} [opts]
+   */
+  async listProjects({ includeLeft = false } = {}) {
+    return [...this.#stores.entries()]
+      .filter(
+        ([projectId]) => includeLeft || !this.#leftProjects.has(projectId),
+      )
+      .map(([projectId, store]) => ({
+        projectId,
+        name: store.settings.name,
+        status: this.#leftProjects.has(projectId) ? 'left' : 'joined',
+      }))
+  }
+
+  /**
+   * Mirror core's `leaveProject`: marks the project left and clears its data,
+   * but does NOT close the live instance — core leaves the gutted instance
+   * cached (only `addProject` cleans it up), so the IPC server must close it.
+   *
+   * @param {string} projectId
+   */
+  async leaveProject(projectId) {
+    const store = this.#stores.get(projectId)
+    if (!store) throw new NotFoundError(`Project ${projectId} does not exist`)
+    // Mirror core: leaving opens the project if it wasn't open.
+    await this.getProject(projectId)
+    this.#leftProjects.add(projectId)
+    store.observations.clear()
+  }
+
+  /**
+   * Simplified stand-in for core's `addProject` on re-invite: closes any
+   * stale cached instance (as core does) and clears the left flag.
+   *
+   * @param {string} projectId
+   */
+  async addProject(projectId) {
+    const store = this.#stores.get(projectId)
+    if (!store) throw new NotFoundError(`Project ${projectId} does not exist`)
+    await this.#liveProjects.get(projectId)?.close()
+    this.#leftProjects.delete(projectId)
   }
 
   async getIsArchiveDevice() {

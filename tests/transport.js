@@ -39,12 +39,18 @@ test('Malformed and unroutable messages are ignored and the client keeps working
   // Well-formed envelope without our channel prefix: a foreign sender sharing
   // the port. Dropped silently — not our traffic, so no warning.
   port2.postMessage({ id: 'someone-elses-channel', message: { value: 'x' } })
-  // Well-formed envelope carrying our prefix but for an instance id the server
-  // never opened — a genuine routing miss. Posted twice to exercise the
-  // warn-once dedupe.
-  const unknownId = '@@comapeo/project/project-999:42'
+  // Well-formed envelope carrying our prefix but matching no channel shape —
+  // a genuine routing miss. Posted twice to exercise the warn-once dedupe.
+  const unknownId = '@@comapeo/bogus-channel'
   port2.postMessage({ id: unknownId, message: { value: 'whatever' } })
   port2.postMessage({ id: unknownId, message: { value: 'whatever' } })
+  // A project-shaped id for a project that doesn't exist, carrying a frame
+  // that isn't a request: rpc-reflector rejects it as an invalid message and
+  // no project open is ever attempted — nothing to respond to, no log.
+  port2.postMessage({
+    id: '@@comapeo/project/project-999',
+    message: { value: 'whatever' },
+  })
 
   // Let the messages flush through the event loop.
   await new Promise((resolve) => setImmediate(resolve))
@@ -56,12 +62,14 @@ test('Malformed and unroutable messages are ignored and the client keeps working
   assert.equal(settings.name, 'mapeo')
 
   // The prefixed-but-unroutable id is logged exactly once (deduped).
-  const unrecognised = logs.filter((w) => w.includes('project-999:42'))
+  const unrecognised = logs.filter((w) => w.includes('bogus-channel'))
   assert.equal(unrecognised.length, 1)
-  // The foreign (unprefixed) envelope and the structurally-invalid messages
-  // are dropped without any log.
+  // The foreign (unprefixed) envelope, the structurally-invalid messages, and
+  // the non-request frame for an unknown project are dropped without any log.
   const foreign = logs.filter((w) => w.includes('someone-elses-channel'))
   assert.equal(foreign.length, 0)
+  const unknownProject = logs.filter((w) => w.includes('project-999'))
+  assert.equal(unknownProject.length, 0)
 })
 
 test('createComapeoCoreServer().close() is idempotent', async (t) => {
