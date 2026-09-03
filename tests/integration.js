@@ -13,7 +13,6 @@ import {
   closeComapeoCoreClient,
 } from '../src/client.js'
 import { createComapeoCoreServer } from '../src/server.js'
-import { ProjectClosedError } from '../src/errors.js'
 
 const require = createRequire(import.meta.url)
 
@@ -80,9 +79,9 @@ test('handle manager initiating the close', async (t) => {
   // This simulates the project being closed through other means like leaveProject
   await rawProject.close()
 
-  await assert.rejects(() => clientProject.$getProjectSettings(), {
-    code: ProjectClosedError.code,
-  })
+  // A subsequent call re-opens the project server-side and resolves.
+  const settings = await clientProject.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
 
   const reOpened = await client.getProject(projectId)
 

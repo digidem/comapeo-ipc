@@ -136,6 +136,18 @@ export class FakeManager extends EventEmitter {
     return project
   }
 
+  /**
+   * Permanently remove a project: close its live instance (if open) and
+   * delete its store so subsequent `getProject` calls throw `NotFoundError`.
+   * Unlike `close()`, the project cannot be re-opened.
+   * @param {string} projectId
+   */
+  async deleteProject(projectId) {
+    const live = this.#liveProjects.get(projectId)
+    if (live) await live.close()
+    this.#stores.delete(projectId)
+  }
+
   async listProjects() {
     return [...this.#stores.entries()].map(([projectId, store]) => ({
       projectId,
