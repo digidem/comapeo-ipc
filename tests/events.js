@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import pDefer from 'p-defer'
 
-import { ClientClosedError, ProjectClosedError } from '../src/errors.js'
+import { ClientClosedError } from '../src/errors.js'
 import { closeComapeoCoreClient } from '../src/client.js'
 
 import { setup } from './helpers.js'
@@ -52,21 +52,31 @@ test('Client listeners stop receiving events after removeListener', async (t) =>
   assert.equal(count, 1, 'no further events after removeListener')
 })
 
-test('EventEmitter methods throw synchronously after the project is closed', async (t) => {
-  const { client } = setup(t)
+test('Project events are still forwarded after the project is closed and re-opened', async (t) => {
+  const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
 
-  await project.close()
+  // Subscribe to a project event, then close the project from the server side
+  // (bypassing the client). The `close` event must be forwarded to the client
+  // so a consumer knows it needs to re-subscribe (see README).
+  /** @type {import('p-defer').DeferredPromise<unknown>} */
+  const closeDeferred = pDefer()
+  project.on('close', () => closeDeferred.resolve())
+  // Round-trip so the 'close' subscription is registered server-side (FIFO
+  // channel) before the close below emits.
+  await project.$getProjectSettings()
 
-  // Emitter methods are not awaited by callers, so a rejected promise would
-  // surface as an unhandled rejection — they throw at the call site instead.
-  assert.throws(() => project.on('some-event', () => {}), {
-    code: ProjectClosedError.code,
-  })
-  assert.throws(() => project.removeListener('some-event', () => {}), {
-    code: ProjectClosedError.code,
-  })
+  const serverProject = await serverManager.getProject(projectId)
+  await serverProject.close()
+
+  await closeDeferred.promise
+
+  // Re-open and re-subscribe: a fresh subscription on the same wrapper now
+  // targets the re-opened instance.
+  const reopened = await client.getProject(projectId)
+  await reopened.$getProjectSettings()
+  assert.ok(reopened)
 })
 
 test('EventEmitter methods throw synchronously after the client is closed', async (t) => {

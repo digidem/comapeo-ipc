@@ -3,9 +3,13 @@ import assert from 'node:assert/strict'
 import { NotFoundError } from '@comapeo/core/errors.js'
 
 import { setup } from './helpers.js'
-import { ProjectClosedError } from '../src/errors.js'
 
-test('After close, methods on the closed reference reject', async (t) => {
+// A project's `close()` is remote-only: the subchannel stays open, so the next
+// call transparently re-opens the project server-side and resolves. There is no
+// per-project "closed" state on the client to reject against — the wrapper and
+// its channel are kept for the life of the connection.
+
+test('After close, a subsequent method call re-opens the project and resolves', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
@@ -15,9 +19,8 @@ test('After close, methods on the closed reference reject', async (t) => {
 
   await project.close()
 
-  await assert.rejects(() => project.$getProjectSettings(), {
-    code: ProjectClosedError.code,
-  })
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
 })
 
 test('close() is idempotent — repeated calls resolve like the first', async (t) => {
@@ -33,32 +36,7 @@ test('close() is idempotent — repeated calls resolve like the first', async (t
   await reopened.$getProjectSettings()
 })
 
-test('After close, nested-namespace methods on the closed reference reject', async (t) => {
-  const { client } = setup(t)
-  const projectId = await client.createProject({ name: 'mapeo' })
-  const project = await client.getProject(projectId)
-
-  // Pre-close: nested namespace works.
-  await project.observation.create({
-    schemaName: 'observation',
-    attachments: [],
-    tags: {},
-  })
-
-  await project.close()
-
-  await assert.rejects(
-    () =>
-      project.observation.create({
-        schemaName: 'observation',
-        attachments: [],
-        tags: {},
-      }),
-    { code: ProjectClosedError.code },
-  )
-})
-
-test('After close, observations created earlier are still readable via a re-opened reference', async (t) => {
+test('After close, observations created earlier are still readable via the same reference', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
@@ -71,45 +49,21 @@ test('After close, observations created earlier are still readable via a re-open
 
   await project.close()
 
+  // The cache is never evicted, so getProject returns the same wrapper; the
+  // server re-opens the project and the earlier observation is still there.
   const reopened = await client.getProject(projectId)
-  assert.notEqual(
-    reopened,
-    project,
-    're-opened reference should be a fresh wrapper',
-  )
+  assert.equal(reopened, project, 'getProject returns the cached wrapper')
 
   const fetched = await reopened.observation.getByDocId(obs.docId)
   assert.equal(fetched.docId, obs.docId)
-})
-
-// The failure mode the bug report flagged: after close + re-open, a stale
-// call through the OLD reference must NOT silently land on the freshly
-// re-opened project — it must reject. The local teardown rejects it before
-// it reaches the wire; per-instance subchannel ids guarantee that even a
-// message that does reach the wire (e.g. posted while close is in flight)
-// cannot route to the new instance.
-test('After close + re-open, a stale call on the old reference still rejects', async (t) => {
-  const { client } = setup(t)
-  const projectId = await client.createProject({ name: 'mapeo' })
-
-  const oldProject = await client.getProject(projectId)
-  await oldProject.$getProjectSettings()
-  await oldProject.close()
-
-  const newProject = await client.getProject(projectId)
-  await newProject.$getProjectSettings()
-
-  await assert.rejects(() => oldProject.$getProjectSettings(), {
-    code: ProjectClosedError.code,
-  })
 })
 
 test('Two parallel getProject(id) calls return one wrapper and both work', async (t) => {
   const { client } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
 
-  // Drive parallel `getProject(id)` calls from a freshly-cleared cache by
-  // closing the project first, so both calls go all the way to the server.
+  // Prime the cache, then close. The cache is never cleared on close, so both
+  // parallel calls below resolve to the same cached wrapper.
   await (await client.getProject(projectId)).close()
 
   const [a, b] = await Promise.all([
@@ -135,53 +89,26 @@ test('Closing one project does not affect another open project', async (t) => {
 
   await projectA.close()
 
-  // A is closed; B is unaffected.
-  await assert.rejects(() => projectA.$getProjectSettings(), {
-    code: ProjectClosedError.code,
-  })
+  // Closing A is scoped to A's subchannel; B is unaffected. A re-opens
+  // transparently on the next call.
   const settingsB = await projectB.$getProjectSettings()
   assert.equal(settingsB.name, 'mapeo-b')
-})
-
-test('When the server closes the project, client calls on the wrapper reject', async (t) => {
-  const { client, serverManager } = setup(t)
-  const projectId = await client.createProject({ name: 'mapeo' })
-  const project = await client.getProject(projectId)
-  await project.$getProjectSettings()
-
-  // Close the project from the server side, bypassing the client. The
-  // wrapper has no idea this happened until it tries a method call.
-  const serverProject = await serverManager.getProject(projectId)
-  await serverProject.close()
-
-  await assert.rejects(() => project.$getProjectSettings(), {
-    code: ProjectClosedError.code,
-  })
-
-  // Even after the project is re-opened on the server, calls from the old
-  // wrapper still reject: they route by the old (tombstoned) instance id,
-  // so they cannot reach the fresh instance.
-  const reopenedServerProject = await serverManager.getProject(projectId)
-  await assert.rejects(() => project.$getProjectSettings(), {
-    code: ProjectClosedError.code,
-  })
-  await reopenedServerProject.close()
+  const settingsA = await projectA.$getProjectSettings()
+  assert.equal(settingsA.name, 'mapeo-a')
 })
 
 // The next two tests pin recovery from a manager-initiated close — what
 // `MapeoManager.addProject` does to a previously-left project when a
 // re-invite is accepted (digidem/comapeo-mobile#2042). The cached client
-// wrapper for the closed instance must not keep being handed out by
-// `getProject` once the project can be re-opened.
+// wrapper keeps working: the server re-opens the project on the next call.
 
-test('After a manager-initiated close is observed, getProject returns a fresh working instance', async (t) => {
+test('After a manager-initiated close is observed, getProject returns a working instance', async (t) => {
   const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)
 
   // Deliberately not node:events `once()`: its cleanup calls
-  // `removeListener` on the wrapper after the close event, which a closed
-  // wrapper may reject synchronously.
+  // `removeListener` on the wrapper after the close event.
   const closeObserved = new Promise((resolve) => {
     project.once('close', resolve)
   })
@@ -196,11 +123,7 @@ test('After a manager-initiated close is observed, getProject returns a fresh wo
   const reOpened = await client.getProject(projectId)
   const settings = await reOpened.$getProjectSettings()
   assert.equal(settings.name, 'mapeo')
-  assert.notEqual(
-    reOpened,
-    project,
-    'getProject after an observed close should return a fresh wrapper',
-  )
+  assert.equal(reOpened, project, 'getProject returns the cached wrapper')
 })
 
 test('getProject returns a working instance immediately after a manager-initiated close', async (t) => {
@@ -212,10 +135,8 @@ test('getProject returns a working instance immediately after a manager-initiate
   await serverProject.close()
 
   // The close notification has not reached the client yet, so its cached
-  // wrapper still looks open. The server already knows the project is
-  // closed (it updated its routing state during close() above), so to
-  // return a working instance here getProject must ask the server rather
-  // than trust its cache.
+  // wrapper is reused. The server already knows the project is closed, so the
+  // next method call re-opens it (see the hook in the server's live handler).
   const reOpened = await client.getProject(projectId)
   const settings = await reOpened.$getProjectSettings()
   assert.equal(settings.name, 'mapeo')
@@ -236,16 +157,18 @@ test('A method call posted before close completes still resolves', async (t) => 
   assert.equal(settings.name, 'mapeo')
 })
 
-// Repeatedly opening and closing the same project must not accumulate
-// closed instances in IPC's per-project bookkeeping. An earlier draft of
-// this PR risked exactly that — every close would have left a stub
-// rpc-server (or a wrapper Proxy) bound to the closed project, growing
-// linearly with the number of cycles.
+// Repeatedly opening and closing the same project must not accumulate closed
+// instances in IPC's per-project bookkeeping. The server's live handler
+// retains only the most recent live instance (`state.current`), not one per
+// open/close cycle, and the client keeps a single wrapper per project. So
+// after N cycles at most the single most-recent instance is retained; one more
+// live call moves it on and frees it.
 //
 // The fake manager releases its project instance on close (it holds no
-// reference to a closed project), so any instance still reachable after a
-// cycle is being retained by the IPC layer itself. We can therefore assert
-// the strong invariant: after N cycles, zero closed instances survive.
+// reference to a closed project), so any captured instance still reachable
+// after a cycle is being retained by the IPC layer itself. We can therefore
+// assert the strong invariant: after N cycles plus a final live call, zero of
+// the captured (closed) instances survive.
 //
 // Runs only when `global.gc` is available (npm test passes --expose-gc).
 test('Repeatedly opening and closing the same project does not retain prior instances', async (t) => {
@@ -274,6 +197,12 @@ test('Repeatedly opening and closing the same project does not retain prior inst
     return ref
   }
 
+  // Release the most-recent instance the server's live handler is holding by
+  // driving one more live call (which re-resolves to a fresh instance), so the
+  // Nth captured instance becomes collectible too.
+  const finalProject = await client.getProject(projectId)
+  await finalProject.$getProjectSettings()
+
   for (let i = 0; i < 20; i++) {
     global.gc()
     await new Promise((resolve) => setImmediate(resolve))
@@ -291,9 +220,8 @@ test('After a failed getProject, a subsequent getProject for a real project succ
   const { client } = setup(t)
 
   // Different ids: first fails (project does not exist), then a real
-  // project is created and getProject(realId) must succeed. Without the
-  // cache-poisoning fix, a rejected entry could linger and break unrelated
-  // ids; with it, only the failed id's entry is evicted.
+  // project is created and getProject(realId) must succeed. A rejected
+  // `getProject` is never cached, so the failure can't poison other ids.
   await assert.rejects(() => client.getProject('does-not-exist'), {
     code: NotFoundError.code,
   })
@@ -303,9 +231,50 @@ test('After a failed getProject, a subsequent getProject for a real project succ
   await project.$getProjectSettings()
 
   // And a retry of the original failing id still rejects (project still
-  // doesn't exist) — proving the failure path itself is also retried, not
-  // returned from a poisoned cache.
+  // doesn't exist) — proving the failure path is retried, not returned from
+  // a cached entry.
   await assert.rejects(() => client.getProject('does-not-exist'), {
     code: NotFoundError.code,
   })
+})
+
+// When the project is *deleted* (not just closed), `resolve()` in the
+// server's `onRequestHook` rejects. The rejection must propagate to the
+// client as the original error — not be swallowed and dispatched against
+// the stale `state.current` instance (which would either silently succeed
+// on freed data or throw a confusing TypeError).
+test('Method call rejects with the server error when the project is deleted server-side', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
+
+  // Delete the project entirely — not just close it.
+  await serverManager.deleteProject(projectId)
+
+  // The next method call should reject with the server's NotFoundError, not
+  // silently succeed on a stale instance or reject with a TypeError.
+  await assert.rejects(() => project.$getProjectSettings(), {
+    code: NotFoundError.code,
+  })
+})
+
+test('Concurrent method calls after a server-side close both re-open and resolve', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
+
+  // Close the project from the server side so the next calls must re-open it.
+  const serverProject = await serverManager.getProject(projectId)
+  await serverProject.close()
+
+  // Two concurrent method calls should both transparently re-open the project
+  // and resolve — neither should dispatch against a stale instance.
+  const [a, b] = await Promise.all([
+    project.$getProjectSettings(),
+    project.$getProjectSettings(),
+  ])
+  assert.equal(a.name, 'mapeo')
+  assert.equal(b.name, 'mapeo')
 })

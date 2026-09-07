@@ -152,27 +152,18 @@ test('Client calls fail after server closes', async (t) => {
     code: ClientClosedError.code,
   })
 
-  // Method calls on the client and on a previously-obtained project reference
-  // also reject with ClientClosedError.
-  const results = await Promise.allSettled([
-    client.listProjects(),
-    projectBefore.$getProjectSettings(),
-  ])
+  // Manager calls reject with ClientClosedError (the manager proxy maps
+  // post-close calls to it).
+  await assert.rejects(() => client.listProjects(), {
+    code: ClientClosedError.code,
+  })
 
-  for (const result of results) {
-    assert.equal(
-      result.status,
-      'rejected',
-      // @ts-ignore
-      result.reason,
-    )
-    assert.equal(
-      // @ts-ignore
-      result.reason.code,
-      ClientClosedError.code,
-      'after the client is closed, calls reject with ClientClosedError',
-    )
-  }
+  // A previously-obtained project reference is left to its own (now-closed)
+  // subchannel, so its calls reject with the underlying channel-closed error
+  // rather than ClientClosedError.
+  await assert.rejects(() => projectBefore.$getProjectSettings(), {
+    code: RpcChannelClosedError.code,
+  })
 })
 
 test('In-flight calls reject with RpcChannelClosedError when the client closes', async (t) => {
