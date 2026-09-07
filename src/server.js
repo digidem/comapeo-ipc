@@ -35,9 +35,6 @@ import { isRelevantEventData } from './lib/utils.js'
  * @returns {{ handler: object, resolve: () => Promise<MapeoProject> }}
  */
 function createLiveProjectHandler(manager, projectId) {
-  /** @type {{ current: MapeoProject | null, error: Error | null }} */
-  const state = { current: null, error: null }
-
   /**
    * Poisoned proxy installed as `state.current` after a failed `resolve()`.
    * Any property access returns itself (so nested namespaces like
@@ -56,6 +53,9 @@ function createLiveProjectHandler(manager, projectId) {
       throw state.error
     },
   })
+
+  /** @type {{ current: MapeoProject | typeof errorProxy | null, error: unknown }} */
+  const state = { current: null, error: null }
 
   /** @type {ProxyHandler<any>} */
   const handler = {
