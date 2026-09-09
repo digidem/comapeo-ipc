@@ -88,3 +88,121 @@ test('EventEmitter methods throw synchronously after the client is closed', asyn
     code: ClientClosedError.code,
   })
 })
+
+test('A listener subscribed after the close event receives events from the re-opened instance', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  /** @type {import('p-defer').DeferredPromise<void>} */
+  const closed = pDefer()
+  project.once('close', () => closed.resolve())
+  await project.$getProjectSettings()
+
+  await (await serverManager.getProject(projectId)).close()
+  await closed.promise
+
+  // README pattern: observe `close`, get the project again, re-subscribe.
+  const reopened = await client.getProject(projectId)
+  /** @type {import('p-defer').DeferredPromise<unknown>} */
+  const received = pDefer()
+  reopened.on('custom', (payload) => received.resolve(payload))
+  // Round-trip: the ON message is now processed server-side, and this call
+  // re-opens the project.
+  await reopened.$getProjectSettings()
+
+  const liveProject = await serverManager.getProject(projectId)
+  liveProject.emit('custom', 'hello')
+
+  const timeout = new Promise((resolve) => setTimeout(resolve, 200, 'timeout'))
+  assert.equal(
+    await Promise.race([received.promise, timeout]),
+    'hello',
+    'event from the re-opened instance was not forwarded',
+  )
+})
+
+test("A persistent 'close' listener is notified on every close, not only the first", async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  /** @type {import('p-defer').DeferredPromise<void>} */
+  const firstClose = pDefer()
+  /** @type {import('p-defer').DeferredPromise<void>} */
+  const secondClose = pDefer()
+  let count = 0
+  project.on('close', () => {
+    count++
+    if (count === 1) firstClose.resolve()
+    else if (count === 2) secondClose.resolve()
+  })
+  await project.$getProjectSettings()
+
+  await (await serverManager.getProject(projectId)).close()
+  await firstClose.promise
+
+  // Transparently re-open, then close again from the server side.
+  await project.$getProjectSettings()
+  await (await serverManager.getProject(projectId)).close()
+
+  const timeout = new Promise((resolve) => setTimeout(resolve, 200, 'timeout'))
+  assert.equal(
+    await Promise.race([secondClose.promise.then(() => 'closed'), timeout]),
+    'closed',
+    'second close event was not forwarded',
+  )
+})
+
+test('Nested-namespace events are forwarded after the project is closed and re-opened', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  /** @type {Array<unknown>} */
+  const updates = []
+  project.observation.on('updated-docs', (docs) => updates.push(docs))
+  await project.$getProjectSettings()
+
+  // Sanity: forwarded while open.
+  await project.observation.create({
+    schemaName: 'observation',
+    attachments: [],
+    tags: {},
+  })
+  await project.$getProjectSettings()
+  assert.equal(updates.length, 1, 'event forwarded before close')
+
+  await (await serverManager.getProject(projectId)).close()
+
+  // Transparently re-opens; the write on the fresh instance emits again.
+  await project.observation.create({
+    schemaName: 'observation',
+    attachments: [],
+    tags: {},
+  })
+  await project.$getProjectSettings()
+  assert.equal(updates.length, 2, 'event not forwarded after re-open')
+})
+
+test('A listener subscribed after a server-side close, before any call, receives events', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
+
+  await (await serverManager.getProject(projectId)).close()
+
+  /** @type {import('p-defer').DeferredPromise<unknown>} */
+  const received = pDefer()
+  project.on('custom', (payload) => received.resolve(payload))
+  await project.$getProjectSettings()
+  ;(await serverManager.getProject(projectId)).emit('custom', 'hello')
+
+  const timeout = new Promise((resolve) => setTimeout(resolve, 200, 'timeout'))
+  assert.equal(
+    await Promise.race([received.promise, timeout]),
+    'hello',
+    'event from the re-opened instance was not forwarded',
+  )
+})

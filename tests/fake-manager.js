@@ -30,25 +30,25 @@ class FakeProject extends EventEmitter {
     super()
     this.#store = store
 
-    /**
-     * @type {{
-     *   create: (value: Record<string, unknown>) => Promise<Record<string, unknown>>,
-     *   getByDocId: (docId: string) => Promise<Record<string, unknown>>,
-     * }}
-     */
-    this.observation = {
+    // Mirror core's DataType: a nested namespace that is itself an emitter,
+    // emitting 'updated-docs' on writes.
+    const observation = Object.assign(new EventEmitter(), {
+      /** @param {Record<string, unknown>} value */
       create: async (value) => {
         const docId = `obs-${++store.obsCounter}`
         const doc = { ...value, docId }
         store.observations.set(docId, doc)
+        observation.emit('updated-docs', [doc])
         return doc
       },
+      /** @param {string} docId */
       getByDocId: async (docId) => {
         const doc = store.observations.get(docId)
         if (!doc) throw new NotFoundError(`No observation with docId ${docId}`)
         return doc
       },
-    }
+    })
+    this.observation = observation
   }
 
   async $getProjectSettings() {
@@ -76,6 +76,29 @@ export class FakeManager extends EventEmitter {
    * @type {Map<string, number>}
    */
   getProjectCallCount = new Map()
+
+  /**
+   * Per-projectId count of live instances constructed, i.e. server-side opens
+   * (a `getProject` that returns an already-open instance does not count).
+   * @type {Map<string, number>}
+   */
+  projectOpenCount = new Map()
+
+  /**
+   * projectId → error to throw from the next `getProject` call, simulating a
+   * transient failure. Cleared once thrown.
+   * @type {Map<string, Error>}
+   */
+  #nextGetProjectError = new Map()
+
+  /**
+   * Make the next `getProject(projectId)` throw `error` (once).
+   * @param {string} projectId
+   * @param {Error} error
+   */
+  failNextGetProject(projectId, error) {
+    this.#nextGetProjectError.set(projectId, error)
+  }
 
   isArchiveDevice = true
 
@@ -116,6 +139,12 @@ export class FakeManager extends EventEmitter {
       (this.getProjectCallCount.get(projectId) ?? 0) + 1,
     )
 
+    const transientError = this.#nextGetProjectError.get(projectId)
+    if (transientError) {
+      this.#nextGetProjectError.delete(projectId)
+      throw transientError
+    }
+
     const store = this.#stores.get(projectId)
     if (!store) throw new NotFoundError(`Project ${projectId} does not exist`)
 
@@ -124,6 +153,10 @@ export class FakeManager extends EventEmitter {
     // `getProject` opens a fresh one.
     let project = this.#liveProjects.get(projectId)
     if (!project) {
+      this.projectOpenCount.set(
+        projectId,
+        (this.projectOpenCount.get(projectId) ?? 0) + 1,
+      )
       project = new FakeProject(store)
       const liveProject = project
       this.#liveProjects.set(projectId, liveProject)

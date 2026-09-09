@@ -278,3 +278,48 @@ test('Concurrent method calls after a server-side close both re-open and resolve
   assert.equal(a.name, 'mapeo')
   assert.equal(b.name, 'mapeo')
 })
+
+test('close() on an already-closed project does not re-open it server-side', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  await project.close()
+  const opensBefore = serverManager.projectOpenCount.get(projectId)
+
+  await project.close()
+
+  assert.equal(
+    serverManager.projectOpenCount.get(projectId),
+    opensBefore,
+    'a second close() must not open a new server-side instance',
+  )
+})
+
+test('getProject rejects with NotFoundError for a project removed after it was first fetched', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  await client.getProject(projectId)
+
+  await serverManager.deleteProject(projectId)
+
+  await assert.rejects(() => client.getProject(projectId), {
+    code: NotFoundError.code,
+  })
+})
+
+// Passing tgest - checkign the new behaviour that was not covered.
+test('A wrapper recovers after a transient server-side getProject failure', async (t) => {
+  const { client, serverManager } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
+
+  serverManager.failNextGetProject(projectId, new Error('transient'))
+  await assert.rejects(() => project.$getProjectSettings(), {
+    message: 'transient',
+  })
+
+  const settings = await project.$getProjectSettings()
+  assert.equal(settings.name, 'mapeo')
+})
