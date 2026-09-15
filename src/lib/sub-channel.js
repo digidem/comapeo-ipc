@@ -9,6 +9,10 @@ export const MANAGER_CHANNEL_ID = '@@comapeo/manager'
 export const PROJECT_ROUTING_ID = '@@comapeo/project-routing'
 export const SERVICES_ID = '@@comapeo/services'
 
+// Server → client only. Every manager and project event the server relays is
+// broadcast here (see lib/events.js); the client never posts on it.
+export const EVENTS_ID = '@@comapeo/events'
+
 // Prefix for per-project instance channel ids; the rest of the id is the
 // project's public id plus a per-open counter (see `openProjectInstance`).
 export const PROJECT_INSTANCE_PREFIX = '@@comapeo/project/'
@@ -99,6 +103,7 @@ export class SubChannel {
    * @param {any} message
    */
   postMessage(message) {
+    if (this.#state === 'closed') return
     this.#messagePort.postMessage({ id: this.#id, message })
   }
 

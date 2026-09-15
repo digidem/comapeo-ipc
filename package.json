@@ -57,8 +57,10 @@
   "homepage": "https://github.com/digidem/comapeo-ipc#readme",
   "dependencies": {
     "custom-error-creator": "^1.4.0",
+    "eventemitter3": "^5.0.4",
     "p-defer": "^4.0.1",
-    "rpc-reflector": "^4.2.0"
+    "rpc-reflector": "^4.2.0",
+    "serialize-error": "^12.0.0"
   },
   "peerDependencies": {
     "@comapeo/core": "^7.0.1"

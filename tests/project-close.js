@@ -97,49 +97,28 @@ test('Closing one project does not affect another open project', async (t) => {
   assert.equal(settingsA.name, 'mapeo-a')
 })
 
-// The next two tests pin recovery from a manager-initiated close — what
+// The next test pins recovery from a manager-initiated close — what
 // `MapeoManager.addProject` does to a previously-left project when a
 // re-invite is accepted (digidem/comapeo-mobile#2042). The cached client
-// wrapper keeps working: the server re-opens the project on the next call.
-
-test('After a manager-initiated close is observed, getProject returns a working instance', async (t) => {
-  const { client, serverManager } = setup(t)
-  const projectId = await client.createProject({ name: 'mapeo' })
-  const project = await client.getProject(projectId)
-
-  // Deliberately not node:events `once()`: its cleanup calls
-  // `removeListener` on the wrapper after the close event.
-  const closeObserved = new Promise((resolve) => {
-    project.once('close', resolve)
-  })
-  // Round-trip so the 'close' subscription is registered server-side
-  // (FIFO channel) before the close below emits.
-  await project.$getProjectSettings()
-
-  const serverProject = await serverManager.getProject(projectId)
-  await serverProject.close()
-  await closeObserved
-
-  const reOpened = await client.getProject(projectId)
-  const settings = await reOpened.$getProjectSettings()
-  assert.equal(settings.name, 'mapeo')
-  assert.equal(reOpened, project, 'getProject returns the cached wrapper')
-})
+// wrapper keeps working: the server re-opens the project on the next call,
+// whether or not the client has had any chance to observe the close.
 
 test('getProject returns a working instance immediately after a manager-initiated close', async (t) => {
   const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
-  await client.getProject(projectId)
+  const project = await client.getProject(projectId)
+  await project.$getProjectSettings()
 
   const serverProject = await serverManager.getProject(projectId)
   await serverProject.close()
 
-  // The close notification has not reached the client yet, so its cached
-  // wrapper is reused. The server already knows the project is closed, so the
-  // next method call re-opens it (see the hook in the server's live handler).
+  // Nothing tells the client about the close, so its cached wrapper is
+  // reused. The server already knows the project is closed, so the next
+  // method call re-opens it (see the hook in the server's live handler).
   const reOpened = await client.getProject(projectId)
   const settings = await reOpened.$getProjectSettings()
   assert.equal(settings.name, 'mapeo')
+  assert.equal(reOpened, project, 'getProject returns the cached wrapper')
 })
 
 test('A method call posted before close completes still resolves', async (t) => {
@@ -238,12 +217,10 @@ test('After a failed getProject, a subsequent getProject for a real project succ
   })
 })
 
-// When the project is *deleted* (not just closed), `resolve()` in the
-// server's `onRequestHook` rejects. The rejection must propagate to the
-// client as the original error — not be swallowed and dispatched against
-// the stale `state.current` instance (which would either silently succeed
-// on freed data or throw a confusing TypeError).
-test('Method call rejects with the server error when the project is deleted server-side', async (t) => {
+// Core cannot delete a project, but any failure to re-resolve it (here a
+// deleted fake) must reach the client as the original error rather than be
+// dispatched against the stale instance.
+test('Method call rejects with the server error when re-opening the project fails', async (t) => {
   const { client, serverManager } = setup(t)
   const projectId = await client.createProject({ name: 'mapeo' })
   const project = await client.getProject(projectId)

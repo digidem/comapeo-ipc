@@ -27,15 +27,19 @@ Creates the IPC server instance. `manager` is a `@comapeo/core` `MapeoManager` i
 
 Returns an object with a `close()` method, which removes relevant event listeners from the `messagePort`. Does not close or destroy the `messagePort`.
 
-### `createComapeoCoreClient(messagePort: MessagePortLike, opts?: { timeout?: number }): ClientApi<MapeoManager>`
+### `createComapeoCoreClient(messagePort: MessagePortLike, opts?: { timeout?: number }): ComapeoCoreClientApi`
 
 Creates the IPC client instance. `messagePort` is an interface that resembles a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort). `opts.timeout` is an optional timeout used for sending and receiving messages over the channel.
 
-Returns a client instance that reflects the interface of the `manager` provided to [`createComapeoCoreServer`](#createcomapeocoreservermanager-mapeomanager-messageport-messageportlike--close---void). Refer to the [`rpc-reflector` docs](https://github.com/digidem/rpc-reflector#const-clientapi--createclientchannel) for additional information about how to use this.
+Returns a client instance that reflects the methods of the `manager` provided to [`createComapeoCoreServer`](#createcomapeocoreservermanager-mapeomanager-messageport-messageportlike--close---void). Refer to the [`rpc-reflector` docs](https://github.com/digidem/rpc-reflector#const-clientapi--createclientchannel) for additional information about how to use this. Server events are delivered through [`getComapeoCoreClientEvents`](#getcomapeocoreclienteventsclient-comapeocoreclientapi-comapeocoreclientemitter), not through reflected `EventEmitter` methods.
 
-### `closeComapeoCoreClient(client: ClientApi<MapeoManager>): Promise<void>`
+### `closeComapeoCoreClient(client: ComapeoCoreClientApi): Promise<void>`
 
-Closes the IPC client instance. Does not close or destroy the `messagePort` provided to [`createComapeoCoreClient`](#createcomapeocoreclientmessageport-messageportlike-opts--timeout-number--clientapimapeomanager).
+Closes the IPC client instance. Does not close or destroy the `messagePort` provided to [`createComapeoCoreClient`](#createcomapeocoreclientmessageport-messageportlike-opts--timeout-number--comapeocoreclientapi).
+
+### `getComapeoCoreClientEvents(client: ComapeoCoreClientApi): ComapeoCoreClientEmitter`
+
+Returns the emitter that delivers server events to the client (see [Events](#events)).
 
 Some application services live outside `@comapeo/core` (for example the map server URL). They have their own client/server pair, which can share the same `messagePort` as the core client/server (see [Behaviour](#behaviour)).
 
@@ -57,7 +61,7 @@ These are the guarantees the wrappers add on top of [`rpc-reflector`](https://gi
 
 ### One port, many channels
 
-A single `messagePort` multiplexes several independent RPC channels: the core (manager) API, an internal project-routing channel used to open projects, one channel per open project, and the services API. Every id this library mints carries a shared `@@comapeo/` prefix and messages are namespaced per channel, so:
+A single `messagePort` multiplexes several independent channels: the core (manager) API, an internal project-routing channel used to open projects, one channel per open project, a server-to-client events channel, and the services API. Every id this library mints carries a shared `@@comapeo/` prefix and messages are namespaced per channel, so:
 
 - `createComapeoCoreServer` and `createComapeoServicesServer` can run over the same `messagePort` (paired with `createComapeoCoreClient` and `createComapeoServicesClient` on the other end) without interfering with each other.
 - Closing one server or client does not disturb the others sharing the port.
@@ -84,15 +88,44 @@ The wrappers never close or destroy the `messagePort` itself — that is the cal
 ### Lifecycle
 
 - `project.close()` closes the project on the server. It does **not** tear down the client's channel or invalidate the reference — the same reference stays usable. It is idempotent — repeated calls resolve like the first.
-- A project can be closed from the client (`project.close()`) **or** by the server (for example `leaveProject`). After it is closed, the next method call on the reference transparently re-opens the project on the server and proceeds against the fresh instance.
+- A project can be closed from the client (`project.close()`) **or** by the server (for example `leaveProject`). After it is closed, the next method call on the reference transparently re-opens the project on the server and proceeds against the fresh instance. Event delivery follows the live instance (see [Events](#events)).
 - `closeComapeoCoreClient(client)` tears down the manager, the project-routing channel, and every project channel. After this, `getProject(id)` and all manager methods reject with [`ClientClosedError`](#errors), and calls on a previously-obtained project reference reject with [`RpcChannelClosedError`](#errors) as its channel is torn down. (The services client is independent; close it separately with [`closeComapeoServicesClient`](#closecomapeoservicesclientservicesclient-clientapicomapeoservicesapi-void).)
 - Calls already in flight when the client is closed reject with [`RpcChannelClosedError`](#errors); they are not re-routed.
+- Closing the server does not notify the client. Calls made while the server is closed reject with [`RpcTimeoutError`](#errors) after `opts.timeout`.
 
 ### Events
 
-The client reflects the `EventEmitter` interface of the manager and of each project. `client.on(event, listener)` forwards events emitted on the server across the channel; `removeListener` / `off` stop the forwarding.
+`getComapeoCoreClientEvents(client)` returns an [`eventemitter3`](https://github.com/primus/eventemitter3) instance typed with the `ComapeoCoreClientEvents` event map:
 
-Project events are only forwarded while the project is open. Because a closed project is re-opened as a _new_ underlying instance, an existing subscription does not automatically carry over. If you need an event after a project has been closed and re-opened, **re-subscribe** — a common pattern is to listen for the project's `close` event, then call `client.on(...)` again (typically right after a fresh `client.getProject(id)`).
+| Event                     | Listener arguments         |
+| ------------------------- | -------------------------- |
+| `local-peers`             | `(peers)`                  |
+| `map-share`               | `(mapShare)`               |
+| `map-share-error`         | `(error, mapShare)`        |
+| `invite-received`         | `(invite)`                 |
+| `invite-updated`          | `(invite)`                 |
+| `project:own-role-change` | `(projectId, changeEvent)` |
+| `project:sync-state`      | `(projectId, state)`       |
+
+Manager and invite events keep their core names and arguments. Project events are prefixed with `project:` and receive the project's public id first, because one channel carries the events of every project. An `Error` argument (as in `map-share-error`) arrives as an `Error`.
+
+```ts
+const events = getComapeoCoreClientEvents(client)
+events.on('local-peers', (peers) => {
+  // ...
+})
+events.on('project:sync-state', (projectId, state) => {
+  // ...
+})
+```
+
+The server broadcasts every event it relays on a dedicated channel and keeps no subscription state; subscriptions exist only in the client emitter. This means:
+
+- **No re-subscribing.** Events for a project come from whichever `MapeoProject` instance is live on the server. When a project is closed and re-opened, events from the new instance reach the same listeners.
+- **No gap between subscribing and fetching.** Events and method responses share the ordered port, so an event emitted while a call is handled arrives before that call's response. Subscribe first, then call a getter: the value it returns already includes every event delivered before it, and later events arrive after it.
+- **Events flow once the client has used the project.** The relay attaches when `getProject(id)` resolves and moves on the next call that finds a different live instance. If the server re-opens a project on its own (for example when core re-joins it), its events resume after the client's next method call on that project; events emitted before that call are lost.
+
+The reflected objects (`client`, `client.invite`, a project, `project.$sync`, `project.observation`, ...) do not expose `EventEmitter` methods: calling `on`, `off`, `addListener` or any other `EventEmitter` method on them throws a `TypeError` pointing at `getComapeoCoreClientEvents`, and the methods are absent from the client types.
 
 ## Errors
 
@@ -108,11 +141,11 @@ import {
 
 After the client is closed, calls made on it reject with a descriptive error:
 
-- **`ClientClosedError`** (`code: 'CLIENT_CLOSED'`) — a method was called on the CoMapeo client, or `getProject(id)` was called, after the whole client was torn down with [`closeComapeoCoreClient`](#closecomapeocoreclientclient-clientapimapeomanager-promisevoid). Whether or not that project was fetched earlier, `getProject(id)` after close rejects with `ClientClosedError` rather than returning a reference.
+- **`ClientClosedError`** (`code: 'CLIENT_CLOSED'`) — a method was called on the CoMapeo client, or `getProject(id)` was called, after the whole client was torn down with [`closeComapeoCoreClient`](#closecomapeocoreclientclient-comapeocoreclientapi-promisevoid). Whether or not that project was fetched earlier, `getProject(id)` after close rejects with `ClientClosedError` rather than returning a reference.
 
-`ClientClosedError` is raised on the manager reference: RPC methods return a rejected `Promise` carrying it, and the event-emitter methods (`on`, `once`, `off`, `removeListener`, etc.) — which return synchronously rather than a promise — **throw** it synchronously at the call site instead, so it surfaces there rather than as an unhandled rejection.
+`ClientClosedError` is raised on the manager reference: RPC methods return a rejected `Promise` carrying it. The client emitter keeps working locally after close (listeners can still be added and removed) but receives no further events.
 
-Calls on a previously-obtained project reference (and any calls already in flight) when the client is closed are not re-routed: they reject with **`RpcChannelClosedError`** as the project's channel tears down. `RpcTimeoutError` is thrown when a call exceeds the `opts.timeout` passed to [`createComapeoCoreClient`](#createcomapeocoreclientmessageport-messageportlike-opts--timeout-number--clientapimapeomanager).
+After the client is closed, calls on a previously-obtained project reference, and any calls already in flight, reject with **`RpcChannelClosedError`** as the project's channel tears down. `RpcTimeoutError` is thrown when a call exceeds the `opts.timeout` passed to [`createComapeoCoreClient`](#createcomapeocoreclientmessageport-messageportlike-opts--timeout-number--comapeocoreclientapi).
 
 ## Usage
 
@@ -138,7 +171,11 @@ server.close()
 In the client:
 
 ```ts
-import { createComapeoCoreClient, closeComapeoCoreClient } from '@comapeo/ipc'
+import {
+  createComapeoCoreClient,
+  closeComapeoCoreClient,
+  getComapeoCoreClientEvents,
+} from '@comapeo/ipc'
 
 // Create the client instance
 // `messagePort` can vary based on context (e.g. a port from a MessageChannel, a NodeJS Mobile bridge channel, etc.)
@@ -149,7 +186,11 @@ const projectId = await client.createProject({...})
 const project = await client.getProject(projectId)
 const projects = await client.listProjects()
 
-client.on('local-peers', (peers) => {
+const events = getComapeoCoreClientEvents(client)
+events.on('local-peers', (peers) => {
+  // ...
+})
+events.on('project:sync-state', (projectId, state) => {
   // ...
 })
 
