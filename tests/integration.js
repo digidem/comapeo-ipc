@@ -11,6 +11,7 @@ import Fastify from 'fastify'
 import {
   createComapeoCoreClient,
   closeComapeoCoreClient,
+  getComapeoCoreClientEvents,
 } from '../src/client.js'
 import { createComapeoCoreServer } from '../src/server.js'
 
@@ -86,6 +87,50 @@ test('handle manager initiating the close', async (t) => {
   const reOpened = await client.getProject(projectId)
 
   await reOpened.$getProjectSettings()
+})
+
+/**
+ * @param {import('node:test').TestContext} t
+ */
+test('events from the real manager and project reach the client emitter', async (t) => {
+  const { client, manager } = setup(t)
+
+  const localPeers = new Promise((resolve) => {
+    getComapeoCoreClientEvents(client).once('local-peers', (peers) =>
+      resolve(peers),
+    )
+  })
+  manager.emit('local-peers', [])
+  assert.deepEqual(await localPeers, [])
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const clientProject = await client.getProject(projectId)
+  await clientProject.$getProjectSettings()
+
+  /** @type {unknown[]} */
+  const received = []
+  getComapeoCoreClientEvents(client).on('project:sync-state', (id, state) =>
+    received.push({ id, state }),
+  )
+
+  const rawProject = await manager.getProject(projectId)
+  rawProject.$sync.emit('sync-state', rawProject.$sync.getState())
+  await clientProject.$getProjectSettings()
+  assert.equal(received.length, 1)
+  assert.deepEqual(received[0], {
+    id: projectId,
+    state: rawProject.$sync.getState(),
+  })
+
+  // Close behind the client's back; the next call re-opens a fresh instance
+  // and its events are relayed without the client re-subscribing.
+  await rawProject.close()
+  await clientProject.$getProjectSettings()
+  const reOpened = await manager.getProject(projectId)
+  assert.notEqual(reOpened, rawProject)
+  reOpened.$sync.emit('sync-state', reOpened.$sync.getState())
+  await clientProject.$getProjectSettings()
+  assert.equal(received.length, 2)
 })
 
 /**

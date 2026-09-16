@@ -8,9 +8,9 @@ import { NotFoundError } from '@comapeo/core/errors.js'
  * retention behaviour (which previously forced the cycle-retention test to
  * tolerate one surviving instance — see tests/project-close.js).
  *
- * Both extend Node's `EventEmitter` so that rpc-reflector can forward events
- * (`getNestedEventEmitter` does an `instanceof EventEmitter` check) and so the
- * IPC server's `project.once('close')` works.
+ * Like their core counterparts they are `EventEmitter`s (as are `invite` and
+ * `$sync`), so the IPC server can relay their events and observe a project's
+ * `close`.
  */
 
 /**
@@ -20,10 +20,29 @@ import { NotFoundError } from '@comapeo/core/errors.js'
  * @property {number} obsCounter
  */
 
+class FakeSyncApi extends EventEmitter {
+  /** @type {Record<string, unknown>} */
+  #state = { data: { isSyncEnabled: false } }
+
+  async getState() {
+    return this.#state
+  }
+
+  /**
+   * Replace the state and emit `sync-state`, as core does on every change.
+   * @param {Record<string, unknown>} state
+   */
+  setState(state) {
+    this.#state = state
+    this.emit('sync-state', state)
+  }
+}
+
 class FakeProject extends EventEmitter {
   /** @type {ProjectStore} */
   #store
   #closed = false
+  $sync = new FakeSyncApi()
 
   /** @param {ProjectStore} store */
   constructor(store) {
@@ -55,6 +74,16 @@ class FakeProject extends EventEmitter {
     return { ...this.#store.settings }
   }
 
+  /**
+   * A mutation that emits during the call, like core's role changes do.
+   * @param {string} roleId
+   */
+  async setOwnRole(roleId) {
+    const changeEvent = { roleId }
+    this.emit('own-role-change', changeEvent)
+    return changeEvent
+  }
+
   async close() {
     if (this.#closed) return
     this.#closed = true
@@ -68,6 +97,9 @@ export class FakeManager extends EventEmitter {
   /** @type {Map<string, FakeProject>} */
   #liveProjects = new Map()
   #projectCounter = 0
+
+  /** Mirrors `manager.invite`: the emitter for invite events. */
+  invite = new EventEmitter()
 
   /**
    * Per-projectId count of `getProject` calls that opened a server-side

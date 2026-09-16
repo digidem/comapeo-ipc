@@ -2,8 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { NotFoundError } from '@comapeo/core/errors.js'
 
-import { ClientClosedError, RpcChannelClosedError } from '../src/errors.js'
-import { closeComapeoCoreClient } from '../src/client.js'
+import {
+  ClientClosedError,
+  RpcChannelClosedError,
+  RpcTimeoutError,
+} from '../src/errors.js'
+import {
+  closeComapeoCoreClient,
+  createComapeoCoreClient,
+} from '../src/client.js'
+import { createComapeoCoreServer } from '../src/server.js'
 
 import { setup } from './helpers.js'
 import { FakeManager } from './fake-manager.js'
@@ -132,7 +140,7 @@ test('Attempting to get non-existent project fails', async (t) => {
   )
 })
 
-test('Client calls fail after server closes', async (t) => {
+test('Calls fail with ClientClosedError after the client closes', async (t) => {
   const { client, server } = setup(t)
 
   const projectId = await client.createProject({ name: 'mapeo' })
@@ -166,6 +174,35 @@ test('Client calls fail after server closes', async (t) => {
   })
 })
 
+test('Project method errors propagate with their code', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+
+  await assert.rejects(() => project.observation.getByDocId('nope'), {
+    code: NotFoundError.code,
+  })
+})
+
+test('Client close waits for an in-flight getProject, then rejects further calls', async (t) => {
+  const { client } = setup(t)
+  const projectId = await client.createProject({ name: 'mapeo' })
+
+  const opening = client.getProject(projectId)
+  const closing = closeComapeoCoreClient(client)
+
+  const project = await opening
+  assert.ok(project)
+  await closing
+
+  await assert.rejects(() => project.$getProjectSettings(), {
+    code: RpcChannelClosedError.code,
+  })
+  await assert.rejects(() => client.getProject(projectId), {
+    code: ClientClosedError.code,
+  })
+})
+
 test('In-flight calls reject with RpcChannelClosedError when the client closes', async (t) => {
   const { client } = setup(t)
 
@@ -179,4 +216,29 @@ test('In-flight calls reject with RpcChannelClosedError when the client closes',
 
   await assert.rejects(inFlight, { code: RpcChannelClosedError.code })
   await closing
+})
+
+test('Calls time out after the server closes', async (t) => {
+  const { port1, port2 } = new MessageChannel()
+  const server = createComapeoCoreServer(
+    /** @type {any} */ (new FakeManager()),
+    port1,
+  )
+  const client = createComapeoCoreClient(port2, { timeout: 50 })
+  port1.start()
+  port2.start()
+  t.after(async () => {
+    await closeComapeoCoreClient(client)
+    port1.close()
+    port2.close()
+  })
+
+  const projectId = await client.createProject({ name: 'mapeo' })
+  const project = await client.getProject(projectId)
+  server.close()
+
+  const expected = { code: RpcTimeoutError.code }
+  await assert.rejects(() => client.listProjects(), expected)
+  await assert.rejects(() => project.$getProjectSettings(), expected)
+  await assert.rejects(() => client.getProject('other'), expected)
 })
