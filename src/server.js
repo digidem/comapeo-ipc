@@ -11,6 +11,7 @@ import {
 import { isRelevantEventData } from './lib/utils.js'
 import {
   INVITE_EVENTS,
+  INVITE_LINKS_EVENTS,
   MANAGER_EVENTS,
   PROJECT_EVENTS,
   SYNC_EVENTS,
@@ -201,6 +202,11 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
     INVITE_EVENTS,
     postEvent,
   )
+  const detachInviteLinksEvents = relayEvents(
+    manager.inviteLinks,
+    INVITE_LINKS_EVENTS,
+    postEvent,
+  )
 
   const projectRoutingApi = new ProjectRoutingApi({
     getProjectInstance(projectId) {
@@ -307,6 +313,7 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
       droppedInstanceIds.clear()
       detachManagerEvents()
       detachInviteEvents()
+      detachInviteLinksEvents()
       eventsChannel.close()
       managerServer.close()
       managerChannel.close()
