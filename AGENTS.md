@@ -91,6 +91,30 @@ tests/
 - `src/lib/reflected-emitter.js` is explicitly **temporary**: it exists only until rpc-reflector stops reflecting `EventEmitter` methods onto client proxies. Don't build on it as a permanent abstraction.
 - Closing the server does **not** notify the client; calls made while the server is closed reject with `RpcTimeoutError` after `timeout`.
 
+## Updating @comapeo/core
+
+When bumping or updating `@comapeo/core`, check for new events on core's emitters and account for them here:
+
+1. **Update `src/lib/events.js`:**
+   - Add any new event names to the relevant list (`MANAGER_EVENTS`, `INVITE_EVENTS`, `INVITE_LINKS_EVENTS`, `PROJECT_EVENTS`, `SYNC_EVENTS`). The `@satisfies` annotations will fail at type-check if the event name doesn't exist on core's emitter.
+   - If a new emitter is added (e.g. `manager.inviteLinks`), create a new `*_EVENTS` constant with its own `@satisfies` against `MapeoManager['<prop>']['on']`.
+   - Add the new events to the `CLIENT_EVENT_NAMES` set.
+   - Add the new events to the `ComapeoCoreClientEvents` typedef with correct argument types. If a type isn't exported from `@comapeo/core`'s root, extract it via a conditional type on the manager (e.g. `MapeoManager['inviteLinks']['on'] extends (event: 'join-request-update', listener: (u: infer U) => void) => any ? U : never`).
+
+2. **Update `src/server.js`:**
+   - Import the new `*_EVENTS` constant.
+   - Add a `relayEvents(manager.<emitter>, <EVENTS>, postEvent)` call alongside the existing ones.
+   - Add the corresponding `detach*()` call in the cleanup path.
+
+3. **Update `tests/fake-manager.js`:**
+   - Add an `EventEmitter` property on `FakeManager` mirroring the new emitter (e.g. `inviteLinks = new EventEmitter()`).
+
+4. **Add tests in `tests/events.js`:**
+   - One test per new event verifying it is delivered on the client emitter (emit on the fake, assert receipt via `nextEvent`).
+   - If a new emitter proxy is exposed on the client, add a throw assertion to the "Reflected EventEmitter methods throw" test.
+
+5. **Run `npm run check` and `npm test`** to confirm types, lint, formatting, and tests all pass.
+
 ## Commit Messages
 
 Conventional Commits style (`type: summary`), enforced for changelog generation. One short line, no trailing period. Name the thing being changed. No "WIP"/"update" prefixes — commit in logical units.
