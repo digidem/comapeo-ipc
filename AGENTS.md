@@ -9,7 +9,7 @@ One `messagePort` multiplexes several independent channels (manager, project-rou
 ## Language & Runtime
 
 - **Plain JavaScript (ESM)** — no TypeScript source, no build step for dev. Types are expressed via **JSDoc**, checked by `tsc --noEmit` (strict, `allowJs`/`checkJs`).
-- **Node ≥ 18.17.1** (`engines`); local dev is pinned to **Node 22** (`.nvmrc` / `.tool-versions`). CI tests against 18, 20, 22, 24.
+- **Node ≥ 24** (`engines`); local dev is pinned to **Node 24** (`.nvmrc` / `.tool-versions`). CI tests against 24.
 - **Build** (`tsc -p tsconfig.npm.json`) only emits `dist/` (JS + `.d.ts`) for publishing — run via `prepack`, not during dev. `dist/` is the `files` field; it is not committed.
 
 ## Commands
