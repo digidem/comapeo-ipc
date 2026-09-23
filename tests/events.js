@@ -51,6 +51,36 @@ test('Invite events are delivered on the client emitter', async (t) => {
   assert.deepEqual(await received, [invite])
 })
 
+test('Invite-link join-request events are delivered on the client emitter', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+
+  const received = nextEvent(
+    getComapeoCoreClientEvents(client),
+    'invite-link-join-request',
+  )
+  const projectId = 'project-1'
+  const deviceId = 'device-1'
+  const inviteId = 'invite-1'
+  manager.emit('invite-link-join-request', projectId, deviceId, inviteId)
+
+  assert.deepEqual(await received, [projectId, deviceId, inviteId])
+})
+
+test('Invite-link join-request-update events are delivered on the client emitter', async (t) => {
+  const manager = new FakeManager()
+  const { client } = setup(t, manager)
+
+  const received = nextEvent(
+    getComapeoCoreClientEvents(client),
+    'join-request-update',
+  )
+  const update = { status: 'connected', inviteId: 'invite-1' }
+  manager.inviteLinks.emit('join-request-update', update)
+
+  assert.deepEqual(await received, [update])
+})
+
 test('Error arguments are reconstructed as Errors', async (t) => {
   const manager = new FakeManager()
   const { client } = setup(t, manager)
@@ -177,6 +207,10 @@ test('Reflected EventEmitter methods throw and point at getComapeoCoreClientEven
   assert.throws(() => {
     // @ts-expect-error
     client.invite.addListener('invite-received', () => {})
+  }, expected)
+  assert.throws(() => {
+    // @ts-expect-error
+    client.inviteLinks.addListener('join-request-update', () => {})
   }, expected)
   assert.throws(() => {
     // @ts-expect-error

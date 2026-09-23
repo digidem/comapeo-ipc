@@ -6,11 +6,20 @@ import { deserializeError, serializeError } from 'serialize-error'
 // lists are checked against core's emitter types.
 export const MANAGER_EVENTS =
   /** @satisfies {ReadonlyArray<Parameters<MapeoManager['on']>[0]>} */ (
-    /** @type {const} */ (['local-peers', 'map-share', 'map-share-error'])
+    /** @type {const} */ ([
+      'local-peers',
+      'map-share',
+      'map-share-error',
+      'invite-link-join-request',
+    ])
   )
 export const INVITE_EVENTS =
   /** @satisfies {ReadonlyArray<Parameters<MapeoManager['invite']['on']>[0]>} */ (
     /** @type {const} */ (['invite-received', 'invite-updated'])
+  )
+export const INVITE_LINKS_EVENTS =
+  /** @satisfies {ReadonlyArray<Parameters<MapeoManager['inviteLinks']['on']>[0]>} */ (
+    /** @type {const} */ (['join-request-update'])
   )
 export const PROJECT_EVENTS =
   /** @satisfies {ReadonlyArray<Parameters<MapeoProject['on']>[0]>} */ (
@@ -27,10 +36,12 @@ export const PROJECT_EVENT_PREFIX = 'project:'
 const CLIENT_EVENT_NAMES = new Set([
   ...MANAGER_EVENTS,
   ...INVITE_EVENTS,
+  ...INVITE_LINKS_EVENTS,
   ...[...PROJECT_EVENTS, ...SYNC_EVENTS].map((e) => PROJECT_EVENT_PREFIX + e),
 ])
 
 /** @typedef {Awaited<ReturnType<MapeoProject['$sync']['getState']>>} SyncState */
+/** @typedef {MapeoManager['inviteLinks']['on'] extends (event: 'join-request-update', listener: (u: infer U) => void) => any ? U : never} JoinRequestUpdate */
 
 /**
  * Events delivered by `getComapeoCoreClientEvents`. Manager and invite events keep their
@@ -44,6 +55,8 @@ const CLIENT_EVENT_NAMES = new Set([
  *   'map-share-error': (error: Error, mapShare: MapShareExtension) => void,
  *   'invite-received': (invite: InviteApi.Invite) => void,
  *   'invite-updated': (invite: InviteApi.Invite) => void,
+ *   'invite-link-join-request': (projectId: string, deviceId: string, inviteId: string) => void,
+ *   'join-request-update': (update: JoinRequestUpdate) => void,
  *   'project:own-role-change': (projectId: string, changeEvent: RoleChangeEvent) => void,
  *   'project:sync-state': (projectId: string, state: SyncState) => void,
  * }} ComapeoCoreClientEvents

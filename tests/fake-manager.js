@@ -100,6 +100,8 @@ export class FakeManager extends EventEmitter {
 
   /** Mirrors `manager.invite`: the emitter for invite events. */
   invite = new EventEmitter()
+  /** Mirrors `manager.inviteLinks`: the emitter for invite-link join events. */
+  inviteLinks = new EventEmitter()
 
   /**
    * Per-projectId count of `getProject` calls that opened a server-side
