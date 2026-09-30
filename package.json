@@ -58,7 +58,6 @@
   "dependencies": {
     "custom-error-creator": "^1.4.0",
     "eventemitter3": "^5.0.4",
-    "p-defer": "^4.0.1",
     "rpc-reflector": "^4.2.0",
     "serialize-error": "^12.0.0"
   },
@@ -76,6 +75,7 @@
     "husky": "9.1.7",
     "lint-staged": "15.5.2",
     "npm-run-all2": "7.0.2",
+    "p-defer": "^4.0.1",
     "prettier": "^3.8.4",
     "typescript": "5.9.3"
   }

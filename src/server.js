@@ -1,7 +1,7 @@
+import { EventEmitter } from 'node:events'
 import { createServer } from 'rpc-reflector/server.js'
 import {
   COMAPEO_PREFIX,
-  EVENTS_ID,
   MANAGER_CHANNEL_ID,
   PROJECT_INSTANCE_PREFIX,
   PROJECT_ROUTING_ID,
@@ -9,43 +9,43 @@ import {
   SubChannel,
 } from './lib/sub-channel.js'
 import { isRelevantEventData } from './lib/utils.js'
-import {
-  INVITE_EVENTS,
-  MANAGER_EVENTS,
-  PROJECT_EVENTS,
-  SYNC_EVENTS,
-  encodeEventFrame,
-  relayEvents,
-} from './lib/events.js'
+import { PROJECT_EVENTS, SYNC_EVENTS } from './lib/events.js'
 
 /** @import { MessagePortLike } from 'rpc-reflector' */
 /** @import { MapeoProject, MapeoManager } from '@comapeo/core' */
 
-/** @typedef {(event: string, args: unknown[]) => void} PostEvent */
+// msgType from rpc-reflector (not publicly exported from the package).
+const ON = 2
+const OFF = 3
 
 /**
  * Build the rpc-reflector handler bound to one project's subchannel.
  *
- * Rather than capturing a single `MapeoProject` instance at open time, the
- * handler is a `Proxy` that always dispatches against the *current* live
+ * The handler is a `Proxy` that always dispatches against the *current* live
  * instance held in `state.current`. That instance is re-resolved by calling
  * `manager.getProject(projectId)` on every method request (via
  * `onRequestHook`) and whenever the client (re-)validates the project, so a
  * project that was closed and re-opened is transparently re-opened and every
  * call lands on the live instance.
  *
- * The project's events are relayed from whichever instance is live; the relay
- * moves whenever `resolve()` lands on a different instance.
+ * The proxy's `getPrototypeOf` returns `EventEmitter.prototype` so that
+ * rpc-reflector's `getNestedEventEmitter` passes the `instanceof` check and
+ * `handleOn`/`handleOff` register listeners through the proxy onto the live
+ * instance. Nested emitters (e.g. `$sync`) are real `EventEmitter` instances
+ * returned by the proxy's `get` trap, so they pass `instanceof` naturally.
  *
- * The proxy forwards `get`/`has` to the live instance and binds functions to
- * it (so top-level methods keep the correct `this`).
+ * On project re-open (instance change), OFF+ON pairs are dispatched on the
+ * channel for every event in the `PROJECT_EVENTS` and `SYNC_EVENTS` lists.
+ * `handleOff` clears the stale subscription (listener on the dead instance),
+ * and `handleOn` re-registers on the new instance via the proxy. The
+ * `subscriptions` map dedupes if the client later re-sends ON.
  *
  * @param {MapeoManager} manager
  * @param {string} projectId
- * @param {PostEvent} postEvent
- * @returns {{ handler: object, resolve: () => Promise<MapeoProject>, detachEvents: () => void }}
+ * @param {SubChannel} channel
+ * @returns {{ handler: object, resolve: () => Promise<MapeoProject> }}
  */
-function createLiveProjectHandler(manager, projectId, postEvent) {
+function createLiveProjectHandler(manager, projectId, channel) {
   /**
    * Poisoned proxy installed as `state.current` after a failed `resolve()`.
    * Any property access returns itself (so nested namespaces like
@@ -75,7 +75,8 @@ function createLiveProjectHandler(manager, projectId, postEvent) {
       if (current == null) return undefined
       if (current === errorProxy) return errorProxy
       const value = Reflect.get(current, prop)
-      return typeof value === 'function' ? value.bind(current) : value
+      if (typeof value === 'function') return value.bind(current)
+      return value
     },
     has(_target, prop) {
       const current = state.current
@@ -83,29 +84,9 @@ function createLiveProjectHandler(manager, projectId, postEvent) {
       if (current === errorProxy) return true
       return Reflect.has(current, prop)
     },
-  }
-
-  /** @type {(() => void) | null} */
-  let detachRelay = null
-
-  /**
-   * Relay project and sync events from `project` until it closes or another
-   * instance becomes live.
-   *
-   * @param {MapeoProject} project
-   */
-  function attachRelay(project) {
-    detachRelay?.()
-    const detachProject = relayEvents(project, PROJECT_EVENTS, postEvent)
-    const detachSync = relayEvents(project.$sync, SYNC_EVENTS, postEvent)
-    const detach = () => {
-      detachProject()
-      detachSync()
-      project.removeListener('close', detach)
-      if (detachRelay === detach) detachRelay = null
-    }
-    project.once('close', detach)
-    detachRelay = detach
+    getPrototypeOf() {
+      return EventEmitter.prototype
+    },
   }
 
   /** @type {Promise<MapeoProject> | null} */
@@ -115,17 +96,34 @@ function createLiveProjectHandler(manager, projectId, postEvent) {
    * Re-resolve the live project instance, refreshing `state.current`. Called
    * on every method request and when the client validates the project.
    *
+   * On instance change (re-open), OFF+ON pairs are dispatched on the channel
+   * for every project/sync event so `handleOff`/`handleOn` re-register on the
+   * new instance.
+   *
    * Concurrent calls share the same in-flight promise so `state.current` is
-   * written once, in completion order. On failure `state.current` is poisoned
-   * with `errorProxy` so the dispatch throws the original error.
+   * written once, in completion order.
    * @returns {Promise<MapeoProject>}
    */
   function resolve() {
     inflightResolve ??= (async () => {
       try {
         const project = await manager.getProject(projectId)
-        if (project !== state.current) attachRelay(project)
-        state.current = project
+        if (project !== state.current) {
+          const isReopen = state.current != null
+          state.current = project
+          state.error = null
+          if (isReopen) {
+            for (const event of PROJECT_EVENTS) {
+              channel.dispatchEvent({ data: [OFF, event, []] })
+              channel.dispatchEvent({ data: [ON, event, []] })
+            }
+            for (const event of SYNC_EVENTS) {
+              channel.dispatchEvent({ data: [OFF, event, ['$sync']] })
+              channel.dispatchEvent({ data: [ON, event, ['$sync']] })
+            }
+          }
+          return project
+        }
         state.error = null
         return project
       } catch (err) {
@@ -139,11 +137,7 @@ function createLiveProjectHandler(manager, projectId, postEvent) {
     return inflightResolve
   }
 
-  return {
-    handler: new Proxy({}, handler),
-    resolve,
-    detachEvents: () => detachRelay?.(),
-  }
+  return { handler: new Proxy({}, handler), resolve }
 }
 
 /**
@@ -158,7 +152,7 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
   // cycles: the client keeps one wrapper per project for the life of the
   // connection, and the handler re-resolves the live instance on each call.
 
-  /** @type {Map<string, { close: () => void, detachEvents: () => void }>} */
+  /** @type {Map<string, { close: () => void }>} */
   const existingInstanceServers = new Map()
 
   /** @type {Map<string, SubChannel>} */
@@ -183,24 +177,6 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
    * @type {Set<string>}
    */
   const droppedInstanceIds = new Set()
-
-  const eventsChannel = new SubChannel(messagePort, EVENTS_ID)
-
-  /**
-   * @param {string} event
-   * @param {unknown[]} args
-   * @param {string} [projectId]
-   */
-  function postEvent(event, args, projectId) {
-    eventsChannel.postMessage(encodeEventFrame(event, args, projectId))
-  }
-
-  const detachManagerEvents = relayEvents(manager, MANAGER_EVENTS, postEvent)
-  const detachInviteEvents = relayEvents(
-    manager.invite,
-    INVITE_EVENTS,
-    postEvent,
-  )
 
   const projectRoutingApi = new ProjectRoutingApi({
     getProjectInstance(projectId) {
@@ -228,23 +204,20 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
    * @returns {Promise<string>} instance id
    */
   async function openProjectInstance(projectId) {
+    const instanceId = `${PROJECT_INSTANCE_PREFIX}${projectId}`
+    const projectChannel = new SubChannel(messagePort, instanceId)
+
     // Throws if the project doesn't exist; the rejection propagates back
-    // to the client through rpc-reflector's standard error response. This
-    // also seeds the live handler's `state.current` and attaches the event
-    // relay before the client can make its first call.
-    const { handler, resolve, detachEvents } = createLiveProjectHandler(
+    // to the client through rpc-reflector's standard error response.
+    const { handler, resolve } = createLiveProjectHandler(
       manager,
       projectId,
-      (event, args) => postEvent(event, args, projectId),
+      projectChannel,
     )
     await resolve()
     if (closed) {
-      detachEvents()
       throw new Error('Server closed')
     }
-
-    const instanceId = `${PROJECT_INSTANCE_PREFIX}${projectId}`
-    const projectChannel = new SubChannel(messagePort, instanceId)
 
     // Re-resolve the live project on every method request so a
     // closed-then-re-opened project is transparently re-opened and the call
@@ -264,7 +237,7 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
     })
 
     existingInstanceChannels.set(instanceId, projectChannel)
-    existingInstanceServers.set(instanceId, { close, detachEvents })
+    existingInstanceServers.set(instanceId, { close })
     projectChannel.start()
 
     return instanceId
@@ -294,7 +267,6 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
 
       for (const [id, server] of existingInstanceServers.entries()) {
         server.close()
-        server.detachEvents()
         const channel = existingInstanceChannels.get(id)
         if (channel) {
           channel.close()
@@ -305,9 +277,6 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
 
       currentInstanceForProject.clear()
       droppedInstanceIds.clear()
-      detachManagerEvents()
-      detachInviteEvents()
-      eventsChannel.close()
       managerServer.close()
       managerChannel.close()
       projectRoutingServer.close()
@@ -332,8 +301,7 @@ export function createComapeoCoreServer(manager, messagePort, opts) {
     if (
       id === MANAGER_CHANNEL_ID ||
       id === PROJECT_ROUTING_ID ||
-      id === SERVICES_ID ||
-      id === EVENTS_ID
+      id === SERVICES_ID
     ) {
       return
     }

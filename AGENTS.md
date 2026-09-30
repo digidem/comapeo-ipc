@@ -4,7 +4,7 @@
 
 IPC wrappers for [CoMapeo Core](https://github.com/digidem/comapeo-core). They bridge the `MapeoManager` API (and a small services API) across a communication boundary using [rpc-reflector](https://github.com/digidem/rpc-reflector) over a [`MessagePort`](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort)-like object. Target contexts: Electron, React Native (NodeJS Mobile), and Node worker threads — anywhere the [Channel Messaging API](https://developer.mozilla.org/en-US/docs/Web/API/Channel_Messaging_API) or an equivalent port applies.
 
-One `messagePort` multiplexes several independent channels (manager, project-routing, one per open project, a server→client events channel, and the services API). See the README's **Behaviour** section for the full contract.
+One `messagePort` multiplexes several independent channels (manager, project-routing, one per open project, and the services API). See the README's **Behaviour** section for the full contract.
 
 ## Language & Runtime
 
@@ -31,14 +31,12 @@ A **pre-commit hook** (husky) runs `lint-staged` → `prettier --write` on stage
 ```
 src/
   index.js        Public API re-exports + shared typedefs (entrypoint)
-  client.js       createComapeoCoreClient / closeComapeoCoreClient /
-                  getComapeoCoreClientEvents + services client
+  client.js       createComapeoCoreClient / closeComapeoCoreClient + services client
   server.js       createComapeoCoreServer / createComapeoServicesServer
   errors.js       ClientClosedError; re-exports Rpc* errors from rpc-reflector
   lib/
     sub-channel.js      Channel-id constants (@@comapeo/ prefix) + SubChannel
-    events.js           Event-name lists + encode/decode event frames
-    reflected-emitter.js Strip reflected EventEmitter methods (temporary, see note)
+    events.js           Event-name lists (used on project re-open)
     utils.js            isRelevantEventData guard
 tests/
   *.js              node:test suites (basic, events, multiplexing, services,
@@ -62,9 +60,10 @@ tests/
 
 ### Events
 
-- Core event lists live in `src/lib/events.js` (`MANAGER_EVENTS`, `INVITE_EVENTS`, `PROJECT_EVENTS`, `SYNC_EVENTS`), each typed via `@satisfies` against the corresponding core emitter. **Adding a new core event requires updating the relevant list AND the `ComapeoCoreClientEvents` typedef** — they are checked against core's emitter types.
-- Project events are prefixed `project:` and receive the project public id as the first listener argument (one channel carries every project's events).
-- Events are delivered only through `getComapeoCoreClientEvents(client)` (an `eventemitter3` instance). Reflected objects do **not** expose `EventEmitter` methods — `src/lib/reflected-emitter.js` strips them so calling `on`/`off`/etc. on a client/project proxy throws a `TypeError`.
+- Events flow through standard `EventEmitter` methods (`.on()`, `.off()`) on the reflected objects, using rpc-reflector's native ON/OFF/EMIT protocol. No separate emitter.
+- Core event lists live in `src/lib/events.js` (`MANAGER_EVENTS`, `INVITE_EVENTS`, `PROJECT_EVENTS`, `SYNC_EVENTS`), each typed via `@satisfies` against the corresponding core emitter. These are used by the server to re-register subscriptions on project re-open (via OFF+ON dispatch on the channel).
+- The server-side project proxy passes `instanceof EventEmitter` (via `getPrototypeOf` trap) so rpc-reflector's `handleOn`/`handleOff` work through it.
+- The client-side proxies block `addEventListener`/`removeEventListener` (return `undefined`) so libraries like `p-event` that check `emitter.addEventListener || emitter.on` fall through to `.on`.
 
 ### Errors
 
@@ -88,7 +87,6 @@ tests/
 
 - **No dev build step.** Edit `.js` in `src/`, run `tsc` (via `npm run check:types`) and `npm test`. `dist/` is publish-only.
 - The server's per-project handler is a **Proxy that dispatches against the _current live_ `MapeoProject`** (re-resolved on every call / re-validation) — not the instance captured at open time. Preserve this when touching `src/server.js`.
-- `src/lib/reflected-emitter.js` is explicitly **temporary**: it exists only until rpc-reflector stops reflecting `EventEmitter` methods onto client proxies. Don't build on it as a permanent abstraction.
 - Closing the server does **not** notify the client; calls made while the server is closed reject with `RpcTimeoutError` after `timeout`.
 
 ## Commit Messages
