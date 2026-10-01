@@ -11,7 +11,6 @@ import Fastify from 'fastify'
 import {
   createComapeoCoreClient,
   closeComapeoCoreClient,
-  getComapeoCoreClientEvents,
 } from '../src/client.js'
 import { createComapeoCoreServer } from '../src/server.js'
 
@@ -92,35 +91,32 @@ test('handle manager initiating the close', async (t) => {
 /**
  * @param {import('node:test').TestContext} t
  */
-test('events from the real manager and project reach the client emitter', async (t) => {
+test('events from the real manager and project reach the client', async (t) => {
   const { client, manager } = setup(t)
 
-  const localPeers = new Promise((resolve) => {
-    getComapeoCoreClientEvents(client).once('local-peers', (peers) =>
-      resolve(peers),
-    )
-  })
+  const localPeers = once(/** @type {any} */ (client), 'local-peers')
+  // Barrier: ensure the ON message is processed before we emit.
+  await client.listProjects()
   manager.emit('local-peers', [])
   assert.deepEqual(await localPeers, [])
 
   const projectId = await client.createProject({ name: 'mapeo' })
-  const clientProject = await client.getProject(projectId)
+  const clientProject = /** @type {any} */ (await client.getProject(projectId))
   await clientProject.$getProjectSettings()
 
   /** @type {unknown[]} */
   const received = []
-  getComapeoCoreClientEvents(client).on('project:sync-state', (id, state) =>
-    received.push({ id, state }),
+  clientProject.$sync.on('sync-state', (/** @type {any} */ state) =>
+    received.push(state),
   )
+  // Barrier: ensure the ON message is processed before we emit.
+  await clientProject.$getProjectSettings()
 
   const rawProject = await manager.getProject(projectId)
   rawProject.$sync.emit('sync-state', rawProject.$sync.getState())
   await clientProject.$getProjectSettings()
   assert.equal(received.length, 1)
-  assert.deepEqual(received[0], {
-    id: projectId,
-    state: rawProject.$sync.getState(),
-  })
+  assert.deepEqual(received[0], rawProject.$sync.getState())
 
   // Close behind the client's back; the next call re-opens a fresh instance
   // and its events are relayed without the client re-subscribing.
@@ -132,6 +128,15 @@ test('events from the real manager and project reach the client emitter', async 
   await clientProject.$getProjectSettings()
   assert.equal(received.length, 2)
 })
+
+/**
+ * Resolve the first time `event` fires on `emitter`, with its first argument.
+ * @param {import('node:events').EventEmitter} emitter
+ * @param {string} event
+ */
+function once(emitter, event) {
+  return new Promise((resolve) => emitter.once(event, (arg) => resolve(arg)))
+}
 
 /**
  * @param {import('node:test').TestContext} t

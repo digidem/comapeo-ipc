@@ -1,25 +1,24 @@
 import { createClient } from 'rpc-reflector/client.js'
-import { EventEmitter } from 'eventemitter3'
 
 import {
-  EVENTS_ID,
   MANAGER_CHANNEL_ID,
   PROJECT_ROUTING_ID,
   SERVICES_ID,
   SubChannel,
 } from './lib/sub-channel.js'
 import { ClientClosedError } from './errors.js'
-import { decodeEventFrame } from './lib/events.js'
-import {
-  isReflectedEmitterMethod,
-  withoutReflectedEmitter,
-} from './lib/reflected-emitter.js'
 
 /** @import { ClientApi, MessagePortLike } from 'rpc-reflector' */
 /** @import { MapeoProject, MapeoManager } from '@comapeo/core' */
 /** @import { ComapeoServicesApi } from './server.js' */
-/** @import { ComapeoCoreClientEvents } from './lib/events.js' */
-/** @import { WithoutEmitter } from './lib/reflected-emitter.js' */
+
+/** @typedef {ClientApi<MapeoProject>} ComapeoProjectClientApi */
+
+/**
+ * @typedef {Omit<ClientApi<MapeoManager>, 'getProject'> & {
+ *   getProject: (projectPublicId: string) => Promise<ComapeoProjectClientApi>,
+ * }} ComapeoCoreClientApi
+ */
 
 /**
  * Build the Proxy returned for a closed client reference. Method calls
@@ -44,18 +43,7 @@ function createClosedProxy(makeError) {
   return new Proxy({}, handler)
 }
 
-/** @typedef {WithoutEmitter<ClientApi<MapeoProject>>} ComapeoProjectClientApi */
-
-/** @typedef {EventEmitter<ComapeoCoreClientEvents>} ComapeoCoreClientEmitter */
-
-/**
- * @typedef {Omit<WithoutEmitter<ClientApi<MapeoManager>>, 'getProject'> & {
- *   getProject: (projectPublicId: string) => Promise<ComapeoProjectClientApi>,
- * }} ComapeoCoreClientApi
- */
-
 const CLOSE = Symbol('close')
-const EVENTS = Symbol('events')
 
 /**
  * @param {MessagePortLike} messagePort
@@ -92,26 +80,14 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
 
   const managerChannel = new SubChannel(messagePort, MANAGER_CHANNEL_ID)
   const projectRoutingChannel = new SubChannel(messagePort, PROJECT_ROUTING_ID)
-  const eventsChannel = new SubChannel(messagePort, EVENTS_ID)
 
   /** @type {ClientApi<MapeoManager>} */
-  const managerClient = withoutReflectedEmitter(
-    createClient(managerChannel, opts),
-  )
+  const managerClient = createClient(managerChannel, opts)
   /** @type {ClientApi<import('./server.js').ProjectRoutingApi>} */
   const projectRoutingClient = createClient(projectRoutingChannel, opts)
 
-  /** @type {ComapeoCoreClientEmitter} */
-  const events = new EventEmitter()
-  eventsChannel.addEventListener('message', ({ data }) => {
-    const decoded = decodeEventFrame(data)
-    if (!decoded) return
-    events.emit(decoded.event, ...decoded.args)
-  })
-
   projectRoutingChannel.start()
   managerChannel.start()
-  eventsChannel.start()
 
   // Set once `closeComapeoCoreClient` has torn the whole client down. Read by
   // the manager proxy so that calls after close surface `ClientClosedError`
@@ -144,23 +120,13 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
           // above can complete rather than reject.
           projectRoutingChannel.close()
           createClient.close(projectRoutingClient)
-          eventsChannel.close()
 
           clientClosed = true
         }
       }
 
-      if (prop === EVENTS) {
-        return events
-      }
-
       if (prop === 'getProject') {
         return createProjectClient
-      }
-
-      // Throws the same "use getComapeoCoreClientEvents" error before and after close
-      if (isReflectedEmitterMethod(prop)) {
-        return Reflect.get(target, prop, receiver)
       }
 
       // `then` must stay falsy so awaiting the client (a thenable check) does
@@ -229,11 +195,9 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
   function createProjectClientWrapper(instanceId) {
     const projectChannel = new SubChannel(messagePort, instanceId)
 
-    /** @type {ComapeoProjectClientApi} */
-    const projectClient = withoutReflectedEmitter(
-      /** @type {ClientApi<MapeoProject>} */ (
-        createClient(projectChannel, opts)
-      ),
+    /** @type {ClientApi<MapeoProject>} */
+    const projectClient = /** @type {ClientApi<MapeoProject>} */ (
+      createClient(projectChannel, opts)
     )
     projectChannel.start()
 
@@ -250,18 +214,6 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
 export async function closeComapeoCoreClient(client) {
   // @ts-expect-error
   return client[CLOSE]()
-}
-
-/**
- * Server events (manager, invite and project events) are delivered here; see
- * `ComapeoCoreClientEvents` for the event map.
- *
- * @param {ComapeoCoreClientApi} client client created with `createComapeoCoreClient`
- * @returns {ComapeoCoreClientEmitter}
- */
-export function getComapeoCoreClientEvents(client) {
-  // @ts-expect-error
-  return client[EVENTS]
 }
 
 /**
