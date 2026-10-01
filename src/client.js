@@ -20,43 +20,17 @@ import { ClientClosedError } from './errors.js'
  * }} ComapeoCoreClientApi
  */
 
-// rpc-reflector dispatches these EventEmitter methods locally and
-// synchronously (they return the client/an array/a number, never a promise).
-// Mirrors the method set rpc-reflector treats specially (`prop in
-// EventEmitter.prototype`).
-const EMITTER_METHODS = new Set([
-  'addListener',
-  'on',
-  'once',
-  'removeListener',
-  'off',
-  'removeAllListeners',
-  'emit',
-  'eventNames',
-  'listeners',
-  'rawListeners',
-  'listenerCount',
-])
-
 /**
  * Build the Proxy returned for a closed client reference. Method calls
  * (including nested namespaces) reject with `makeError()`, keeping the
- * `Promise`-returning contract callers expect. EventEmitter methods are the
- * exception: callers don't await them, so a rejected promise would surface
- * as an unhandled rejection — they throw synchronously instead, at the call
- * site.
+ * `Promise`-returning contract callers expect.
  *
  * @param {() => Error} makeError
  */
 function createClosedProxy(makeError) {
   /** @type {ProxyHandler<any>} */
   const handler = {
-    get(_target, prop) {
-      if (typeof prop === 'string' && EMITTER_METHODS.has(prop)) {
-        return () => {
-          throw makeError()
-        }
-      }
+    get() {
       return new Proxy(function () {}, handler)
     },
     has() {
@@ -161,15 +135,6 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
         return Reflect.get(managerClosedProxy, prop)
       }
 
-      // Block EventTarget methods so libraries like `p-event` that check
-      // `emitter.addEventListener || emitter.on` fall through to `.on`.
-      // Without this, the rpc-reflector client's proxy returns a callable
-      // sub-proxy for `addEventListener`, which `p-event` picks up and calls
-      // as a remote method → DataCloneError.
-      if (prop === 'addEventListener' || prop === 'removeEventListener') {
-        return undefined
-      }
-
       return Reflect.get(target, prop, receiver)
     },
   })
@@ -231,27 +196,14 @@ export function createComapeoCoreClient(messagePort, opts = {}) {
     const projectChannel = new SubChannel(messagePort, instanceId)
 
     /** @type {ClientApi<MapeoProject>} */
-    const rawClient = /** @type {ClientApi<MapeoProject>} */ (
+    const projectClient = /** @type {ClientApi<MapeoProject>} */ (
       createClient(projectChannel, opts)
     )
     projectChannel.start()
 
-    openProjectClients.add({ client: rawClient, channel: projectChannel })
+    openProjectClients.add({ client: projectClient, channel: projectChannel })
 
-    // Wrap in a proxy that blocks EventTarget methods so `p-event` and
-    // similar libraries fall through to `.on` instead of calling a
-    // non-existent remote `addEventListener`.
-    /** @type {ProxyHandler<any>} */
-    const handler = {
-      get(target, prop, receiver) {
-        if (prop === 'addEventListener' || prop === 'removeEventListener') {
-          return undefined
-        }
-        return Reflect.get(target, prop, receiver)
-      },
-    }
-
-    return /** @type {any} */ (new Proxy(rawClient, handler))
+    return projectClient
   }
 }
 

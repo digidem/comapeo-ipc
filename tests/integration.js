@@ -12,7 +12,6 @@ import {
   createComapeoCoreClient,
   closeComapeoCoreClient,
 } from '../src/client.js'
-import { pEvent } from 'p-event'
 import { createComapeoCoreServer } from '../src/server.js'
 
 const require = createRequire(import.meta.url)
@@ -95,9 +94,7 @@ test('handle manager initiating the close', async (t) => {
 test('events from the real manager and project reach the client', async (t) => {
   const { client, manager } = setup(t)
 
-  const localPeers = pEvent(/** @type {any} */ (client), 'local-peers', {
-    timeout: 2000,
-  })
+  const localPeers = once(/** @type {any} */ (client), 'local-peers')
   // Barrier: ensure the ON message is processed before we emit.
   await client.listProjects()
   manager.emit('local-peers', [])
@@ -131,6 +128,15 @@ test('events from the real manager and project reach the client', async (t) => {
   await clientProject.$getProjectSettings()
   assert.equal(received.length, 2)
 })
+
+/**
+ * Resolve the first time `event` fires on `emitter`, with its first argument.
+ * @param {import('node:events').EventEmitter} emitter
+ * @param {string} event
+ */
+function once(emitter, event) {
+  return new Promise((resolve) => emitter.once(event, (arg) => resolve(arg)))
+}
 
 /**
  * @param {import('node:test').TestContext} t
